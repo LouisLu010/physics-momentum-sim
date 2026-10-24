@@ -1,3 +1,5 @@
+import { arcBase, verticalTangentCenters } from './arcGeometry.js'
+
 export const SCALE = 100
 export const SCENE_VERSION = 1
 export const STORAGE_KEY = 'momentum-lab.scene.v1'
@@ -15,7 +17,7 @@ export const PRESETS = [
 export function makeObject(type, x = 450, y = 280, id = crypto.randomUUID()) {
   if (!TYPES.includes(type)) throw new Error('Unknown object type')
   const common = { id, type, name: LABELS[type] }
-  if (type === 'arc') return { ...common, cx: x, cy: y, radius: 180, startAngle: 0, angle: 180 }
+  if (type === 'arc') return { ...common, cx: x, cy: y, radius: 180, startAngle: 0, angle: 180, mass: 5, vx: 0, vy: 0, restitution: 0, fixed: false }
   if (type === 'ground') return { ...common, x: x - 200, y, width: 400 }
   if (['rod', 'rope', 'spring'].includes(type)) return { ...common, ax: x - 75, ay: y, bx: x + 75, by: y, bodyA: '', bodyB: '', length: 150, stiffness: 40, damping: 0 }
   const body = { ...common, x, y, vx: 0, vy: 0, mass: 1, restitution: 1, fixed: false }
@@ -40,7 +42,10 @@ export function createScene(preset = 'arc') {
   } else if (preset === 'bead') {
     scene.objects = [connector('rod', 'rod-a', { name: '固定斜杆', ax: 250, ay: 190, bx: 650, by: 420, length: Math.hypot(400, 230) }), ball('ball-a', 330, 236, { name: '套杆小球', rodId: 'rod-a' }), floor]
   } else {
-    scene.objects = [{ ...makeObject('arc', 365, 235, 'arc-a'), name: '弧形槽 A', radius: 225 }, ball('ball-a', 200, 330, { name: '小球 A', restitution: 0.1 }), block('block-a', 695, 490, { name: '滑块 A', restitution: 0.3 }), floor]
+    const arc = { ...makeObject('arc', 365, 235, 'arc-a'), name: '弧形槽 A', radius: 225 }
+    arc.cy += floor.y - arcBase(arc).bottom
+    const tangent = verticalTangentCenters(arc, 19).find(point => point.side === 'left')
+    scene.objects = [arc, ball('ball-a', tangent.x, tangent.y, { name: '小球 A', restitution: 0.1 }), block('block-a', 695, 490, { name: '滑块 A', restitution: 0.3 }), floor]
   }
   return scene
 }
@@ -65,18 +70,19 @@ export function parseScene(input) {
       if (typeof base[key] === 'number') base[key] = number(object[key], base[key])
     }
     base.name = typeof object.name === 'string' ? object.name.slice(0, 40) : base.name
-    if (object.type === 'ball' || object.type === 'block') {
-      base.mass = number(object.mass, 1, 0.05, 1000)
+    if (['ball', 'block', 'arc'].includes(object.type)) {
+      base.mass = number(object.mass, base.mass, 0.05, 1000)
       base.fixed = object.fixed === true
-      base.restitution = number(object.restitution, 1, 0, 1)
+      base.restitution = number(object.restitution, base.restitution, 0, 1)
       base.vx = number(object.vx, 0, -5000, 5000)
       base.vy = number(object.vy, 0, -5000, 5000)
       if (object.type === 'ball') { base.radius = number(object.radius, 19, 5, 80); base.rodId = typeof object.rodId === 'string' ? object.rodId : '' }
-      else { base.width = number(object.width, 76, 10, 300); base.height = number(object.height, 48, 10, 300) }
-    } else if (object.type === 'arc') {
-      base.radius = number(object.radius, 180, 10, 1000)
-      base.angle = number(object.angle, 180, 15, 350)
-      base.startAngle = number(object.startAngle, 0, -360, 360)
+      else if (object.type === 'block') { base.width = number(object.width, 76, 10, 300); base.height = number(object.height, 48, 10, 300) }
+      else {
+        base.radius = number(object.radius, 180, 10, 1000)
+        base.angle = number(object.angle, 180, 15, 350)
+        base.startAngle = number(object.startAngle, 0, -360, 360)
+      }
     } else if (object.type === 'ground') base.width = number(object.width, 400, 10, 3000)
     else {
       base.length = number(object.length, 150, 5, 2000)
@@ -87,7 +93,7 @@ export function parseScene(input) {
     }
     return base
   })
-  const bodies = new Set(objects.filter(object => ['ball', 'block'].includes(object.type)).map(object => object.id))
+  const bodies = new Set(objects.filter(object => ['ball', 'block', 'arc'].includes(object.type)).map(object => object.id))
   const rods = new Set(objects.filter(object => object.type === 'rod').map(object => object.id))
   for (const object of objects) {
     if ('bodyA' in object) { if (!bodies.has(object.bodyA)) object.bodyA = ''; if (!bodies.has(object.bodyB) || object.bodyB === object.bodyA) object.bodyB = '' }
@@ -106,8 +112,8 @@ export function removeObject(scene, id) {
   return { ...scene, objects: scene.objects.filter(object => object.id !== id).map(object => {
     const updated = { ...object }
     if (object.rodId === id) updated.rodId = ''
-    if (object.bodyA === id) { updated.bodyA = ''; updated.ax = removed.x; updated.ay = removed.y }
-    if (object.bodyB === id) { updated.bodyB = ''; updated.bx = removed.x; updated.by = removed.y }
+    if (object.bodyA === id) { updated.bodyA = ''; updated.ax = removed.cx ?? removed.x; updated.ay = removed.cy ?? removed.y }
+    if (object.bodyB === id) { updated.bodyB = ''; updated.bx = removed.cx ?? removed.x; updated.by = removed.cy ?? removed.y }
     return updated
   }) }
 }
@@ -117,8 +123,10 @@ export function alignGuides(objects) {
     if (!object.rodId) return object
     const rod = objects.find(item => item.id === object.rodId && item.type === 'rod')
     if (!rod) return object
-    const a = objects.find(item => item.id === rod.bodyA) || { x: rod.ax, y: rod.ay }
-    const b = objects.find(item => item.id === rod.bodyB) || { x: rod.bx, y: rod.by }
+    const first = objects.find(item => item.id === rod.bodyA)
+    const second = objects.find(item => item.id === rod.bodyB)
+    const a = { x: first?.cx ?? first?.x ?? rod.ax, y: first?.cy ?? first?.y ?? rod.ay }
+    const b = { x: second?.cx ?? second?.x ?? rod.bx, y: second?.cy ?? second?.y ?? rod.by }
     const dx = b.x - a.x; const dy = b.y - a.y
     const t = Math.max(0, Math.min(1, ((object.x - a.x) * dx + (object.y - a.y) * dy) / Math.max(1, dx * dx + dy * dy)))
     return { ...object, x: a.x + t * dx, y: a.y + t * dy }

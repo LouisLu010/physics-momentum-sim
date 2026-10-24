@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { connectorEndpoints, drawScene, hitObject, viewTransform, WORLD_SIZE } from '../src/canvasDrawing.js'
+import { arcBase } from '../src/arcGeometry.js'
 
 const ball = { id: 'ball', name: '小球', type: 'ball', x: 100, y: 150, radius: 15, mass: 1, vx: 0, vy: 0 }
 const block = { id: 'block', name: '滑块', type: 'block', x: 300, y: 150, width: 80, height: 40, mass: 2, vx: 0, vy: 0 }
@@ -13,6 +14,12 @@ test('连接器使用物体质心或固定锚点，且不修改输入', () => {
   assert.deepEqual(connectorEndpoints({ ...rod, bodyB: 'block' }, objects), { a: { x: 100, y: 150 }, b: { x: 300, y: 150 } })
   assert.deepEqual(connectorEndpoints({ ...rod, bodyA: 'removed' }, objects), { a: { x: 0, y: 0 }, b: { x: 300, y: 150 } })
   assert.deepEqual(objects, snapshot)
+})
+
+test('连接器可连接平移槽体，端点随圆心移动', () => {
+  const arc = { id: 'trough', type: 'arc', cx: 410, cy: 260, radius: 90, startAngle: 0, angle: 180 }
+  assert.deepEqual(connectorEndpoints({ ...rod, bodyB: arc.id }, [ball, arc]), { a: { x: 100, y: 150 }, b: { x: 410, y: 260 } })
+  assert.deepEqual(connectorEndpoints({ ...rod, bodyA: arc.id, bodyB: 'ball' }, [{ ...arc, cx: 450 }, ball]), { a: { x: 450, y: 260 }, b: { x: 100, y: 150 } })
 })
 
 test('杆的中段可选中，重叠位置优先命中物体', () => {
@@ -35,6 +42,18 @@ test('弧形槽只在真实扫角内命中，并处理跨越零度的弧段', ()
   const wrapped = { ...arc, startAngle: 300, angle: 120 }
   assert.equal(hitObject([wrapped], { x: 400, y: 300 }, 1, true)?.id, 'arc')
   assert.equal(hitObject([wrapped], { x: 200, y: 300 }, 1, true), null)
+})
+
+test('平底槽可由底座和槽体选中，空腔仍允许平移画布', () => {
+  const arc = { id: 'trough', type: 'arc', cx: 300, cy: 300, radius: 100, startAngle: 0, angle: 180 }
+  const base = arcBase(arc)
+  assert.equal(hitObject([arc], { x: 300, y: (base.top + base.bottom) / 2 }, 1, true)?.id, arc.id)
+  assert.equal(hitObject([arc], { x: 230, y: 395 }, 1, true)?.id, arc.id)
+  assert.equal(hitObject([arc], { x: 300, y: 350 }, 1, true), null)
+  assert.equal(hitObject([arc], { x: base.left - 25, y: base.bottom }, 1, true), null)
+  assert.equal(hitObject([arc], { x: 300, y: base.bottom }, 1, true, true)?.id, arc.id)
+  const overlapping = { ...ball, x: 300, y: base.top }
+  assert.equal(hitObject([overlapping, arc], { x: 300, y: base.top }, 1, true, true)?.id, ball.id)
 })
 
 test('关闭的地面和有限地面外部不可选中', () => {
@@ -67,7 +86,7 @@ test('画布采用等比缩放、居中留白并叠加平移', () => {
 function recordingCanvas() {
   const calls = []
   const context = {}
-  for (const name of ['setTransform', 'clearRect', 'fillRect', 'translate', 'scale', 'beginPath', 'moveTo', 'lineTo', 'stroke', 'fill', 'arc', 'save', 'restore', 'setLineDash', 'strokeText', 'fillText', 'roundRect', 'quadraticCurveTo']) {
+  for (const name of ['setTransform', 'clearRect', 'fillRect', 'translate', 'scale', 'beginPath', 'closePath', 'moveTo', 'lineTo', 'stroke', 'fill', 'arc', 'save', 'restore', 'setLineDash', 'strokeText', 'fillText', 'roundRect', 'quadraticCurveTo']) {
     context[name] = (...args) => calls.push({ name, args })
   }
   return { width: 900, height: 620, getContext: () => context, calls }
@@ -102,6 +121,39 @@ test('各种元件与选中状态可绘制，尺寸标注使用米', () => {
     assert.ok(canvas.calls.some(call => call.name === 'stroke'))
     if (object.type === 'arc') assert.ok(canvas.calls.some(call => call.name === 'fillText' && call.args[0].includes('1.80 m')))
   }
+})
+
+test('槽体底面是与碰撞几何一致的水平边，底座展示质量或固定状态', () => {
+  const arc = { id: 'trough', type: 'arc', cx: 300, cy: 250, radius: 100, startAngle: 0, angle: 180, mass: 5, fixed: false }
+  const base = arcBase(arc)
+  const canvas = recordingCanvas()
+  drawScene(canvas, { ...drawingOptions, objects: [arc], selectedId: arc.id })
+  assert.ok(canvas.calls.some((call, index) => call.name === 'lineTo' && call.args[0] === base.left && call.args[1] === base.bottom && canvas.calls[index + 1]?.name === 'lineTo' && canvas.calls[index + 1].args[0] === base.right && canvas.calls[index + 1].args[1] === base.bottom))
+  assert.ok(canvas.calls.some(call => call.name === 'fillText' && call.args[0] === '5 kg'))
+  const fixed = recordingCanvas()
+  drawScene(fixed, { ...drawingOptions, objects: [{ ...arc, fixed: true }] })
+  assert.ok(fixed.calls.some(call => call.name === 'fillText' && call.args[0] === '固定'))
+})
+
+test('旋转或跨越上半圆的槽仍具有有效水平底座', () => {
+  for (const [startAngle, angle] of [[300, 120], [180, 180], [75, 260]]) {
+    const arc = { id: 'trough', type: 'arc', cx: 300, cy: 250, radius: 100, startAngle, angle, mass: 5 }
+    const canvas = recordingCanvas()
+    const base = arcBase(arc)
+    drawScene(canvas, { ...drawingOptions, objects: [arc] })
+    assert.ok(canvas.calls.some(call => call.name === 'fillRect' && call.args[0] === base.left && call.args[1] === base.top && call.args[3] === base.bottom - base.top))
+    assert.ok(canvas.calls.every(call => call.args.filter(value => typeof value === 'number').every(Number.isFinite)))
+    assert.equal(hitObject([arc], { x: (base.left + base.right) / 2, y: (base.top + base.bottom) / 2 }, 1, true)?.id, arc.id)
+  }
+})
+
+test('吸附目标和对齐线使用场景坐标，在缩放后仍保持清晰', () => {
+  const canvas = recordingCanvas()
+  const snapHint = { kind: 'arc-ground', point: { x: 330, y: 535 }, line: { x1: 110, y1: 535, x2: 600, y2: 535 }, label: '槽底已贴合地面' }
+  drawScene(canvas, { ...drawingOptions, view: { zoom: 2, x: 30, y: 20 }, snapHint })
+  assert.ok(canvas.calls.some(call => call.name === 'moveTo' && call.args[0] === 110 && call.args[1] === 535))
+  assert.ok(canvas.calls.some(call => call.name === 'lineTo' && call.args[0] === 600 && call.args[1] === 535))
+  assert.ok(canvas.calls.some(call => call.name === 'arc' && call.args[0] === 330 && call.args[1] === 535 && call.args[2] * 2 === 5))
 })
 
 test('关闭地面后不再绘制地面的斜线标记', () => {

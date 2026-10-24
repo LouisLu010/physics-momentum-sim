@@ -4,10 +4,12 @@ import Inspector from './Inspector.jsx'
 import { Icon } from './ui.jsx'
 import { integrate, endpoints, measure } from './physics.js'
 import { recordTrails, TRAIL_INTERVAL } from './trails.js'
+import { arcBase } from './arcGeometry.js'
+import { snapObject } from './snapping.js'
 import { alignGuides, cloneScene, COLORS, createScene, LABELS, makeObject, parseScene, PRESETS, removeObject, STORAGE_KEY, TYPES } from './model.js'
 
-const HINTS = { arc: '半径 / 圆心角', block: '质量与初速度', ball: '自由运动 / 沿杆滑动', rod: '保持两端距离', rope: '绷紧时产生拉力', spring: '胡克定律', ground: '有限碰撞平面' }
-const IS_BODY = object => object && ['ball', 'block'].includes(object.type)
+const HINTS = { arc: '平底槽 / 可滑动', block: '质量与初速度', ball: '自由运动 / 沿杆滑动', rod: '保持两端距离', rope: '绷紧时产生拉力', spring: '胡克定律', ground: '有限碰撞平面' }
+const IS_BODY = object => object && ['ball', 'block', 'arc'].includes(object.type)
 const IS_CONNECTOR = object => object && ['rod', 'rope', 'spring'].includes(object.type)
 const FIXED_DT = 1 / 120
 
@@ -42,8 +44,9 @@ function HelpDialog({ onClose }) {
   return <dialog ref={dialogRef} className="help-dialog" onCancel={onClose} onClick={event => { if (event.target === event.currentTarget) onClose() }}>
     <div className="dialog-heading"><h2>从一张草图开始</h2><button aria-label="关闭使用说明" className="icon-button" onClick={onClose}><Icon name="close" /></button></div>
     <ol><li>拖入或点击添加元件。在画布上拖动，选中后在检查器中改参数。</li><li>添加杆、绳或弹簧，分别设置端点 A、B；未连接的端点固定在空间中。</li><li>选中小球，在“杆上滑动”中选择杆，小球便成为可滑动的套环。</li><li>开启或关闭地面、重力与摩擦，设置初速度，然后点击运行。空格可暂停。</li><li>重置恢复到本次运行前的布局；修改参数会暂停模拟，并将当前位置作为新起点。</li></ol>
-    <p>画布坐标向右、向下为正，100 px 对应 1 m。无外力时，系统总动量守恒；固定锚点、地面和弧槽可向系统施加外力。</p>
-    <p className="model-note">二维教学模型：滑块不旋转，杆、绳、弹簧无质量，弧槽固定。滑块与弧槽接触使用支撑半径近似；数值积分存在小量误差。</p>
+    <p>画布坐标向右、向下为正，100 px 对应 1 m。无外力时，系统总动量守恒；固定锚点、地面和固定槽可向系统施加外力。</p>
+    <p>拖动小球靠近槽的竖直切点、或拖动槽底靠近地面时会自动吸附。按住 Alt 可暂时关闭吸附；吸附仅用于摆放，不会锁住运行中的物体。</p>
+    <p className="model-note">二维教学模型：滑块与槽体不旋转，杆、绳、弹簧无质量。槽体可滑动或固定，动量读数包含槽体。滑块与弧槽接触使用支撑半径近似；数值积分存在小量误差。</p>
     <button className="button button-primary" onClick={onClose}>开始实验</button>
   </dialog>
 }
@@ -63,6 +66,7 @@ export default function App() {
   const [speed, setSpeed] = useState(1)
   const [selectedId, setSelectedId] = useState(design.objects[0]?.id || null)
   const [connectionMode, setConnectionMode] = useState(null)
+  const [snapHint, setSnapHint] = useState(null)
   const [saveState, setSaveState] = useState('正在保存')
   const [message, setMessage] = useState(boot.message)
   const [showHelp, setShowHelp] = useState(false)
@@ -103,6 +107,7 @@ export default function App() {
 
   const edit = useCallback(updater => {
     setRunning(false)
+    setSnapHint(null)
     const current = frameRef.current || designRef.current
     const result = typeof updater === 'function' ? updater(current) : updater
     const next = { ...result, objects: alignGuides(result.objects) }
@@ -114,12 +119,12 @@ export default function App() {
   }, [clearTrails])
 
   const reset = useCallback(() => {
-    setRunning(false); setFrame(null); setSimTime(0); setConnectionMode(null)
+    setRunning(false); setFrame(null); setSimTime(0); setConnectionMode(null); setSnapHint(null)
     frameRef.current = null; timeRef.current = 0
     clearTrails()
   }, [clearTrails])
 
-  const toggleRunning = useCallback(() => { setConnectionMode(null); setRunning(value => !value) }, [])
+  const toggleRunning = useCallback(() => { setConnectionMode(null); setSnapHint(null); setRunning(value => !value) }, [])
   const deleteSelected = useCallback(() => {
     if (!selectedId) return
     edit(current => {
@@ -156,7 +161,7 @@ export default function App() {
           timeRef.current += FIXED_DT
           sampleTrails(current)
         }
-        const invalid = current.objects.some(object => (IS_BODY(object) && [object.x, object.y, object.vx, object.vy].some(value => !Number.isFinite(value))))
+        const invalid = current.objects.some(object => (IS_BODY(object) && [object.cx ?? object.x, object.cy ?? object.y, object.vx, object.vy].some(value => !Number.isFinite(value))))
         if (invalid) { setRunning(false); setMessage('当前组合计算不稳定，已暂停。请减小初速度或弹簧劲度。'); return }
         frameRef.current = current
         setFrame(current); setSimTime(timeRef.current)
@@ -178,11 +183,12 @@ export default function App() {
     setFrame(next); setSimTime(timeRef.current)
   }
 
-  const addObject = (type, point) => {
+  const addObject = (type, point, gesture = {}) => {
     if (scene.objects.length >= 60) { setMessage('最多支持 60 个元件，请先删除一些元件。'); return }
     const count = scene.objects.filter(object => object.type === type).length
     const position = point || { x: 440 + count * 25, y: type === 'ground' ? 535 : 220 + count * 20 }
-    const object = makeObject(type, position.x, position.y)
+    const rawObject = makeObject(type, position.x, position.y)
+    const { object } = snapObject(rawObject, scene.objects, { groundEnabled: scene.ground, scale: gesture.scale, disabled: gesture.bypassSnap })
     object.name = `${LABELS[type]} ${count + 1}`
     edit(current => ({ ...current, objects: [...current.objects, object], ...(type === 'ground' ? { ground: true } : {}) }))
     setSelectedId(object.id); setConnectionMode(null)
@@ -191,6 +197,12 @@ export default function App() {
   const updateObject = changes => {
     if (!selected) return
     const updated = { ...selected, ...changes }
+    if (updated.type === 'arc' && scene.ground && ['radius', 'startAngle', 'angle'].some(key => key in changes)) {
+      // 调整已贴地槽的几何时，保持其水平底面仍在原地面上。
+      const oldBase = arcBase(selected)
+      const support = scene.objects.find(object => object.type === 'ground' && Math.abs(object.y - oldBase.bottom) < 0.1 && oldBase.right > object.x && oldBase.left < object.x + object.width)
+      if (support) updated.cy += support.y - arcBase(updated).bottom
+    }
     if (IS_CONNECTOR(updated)) {
       if (updated.bodyA && updated.bodyA === updated.bodyB) { setMessage('两个端点需要连接不同的物体。'); return }
       if (scene.objects.some(object => object.rodId === updated.id && [updated.bodyA, updated.bodyB].includes(object.id))) { setMessage('套在杆上的小球不能同时作为该杆的端点。'); return }
@@ -224,19 +236,26 @@ export default function App() {
     }) }))
   }
 
-  const moveObject = (id, dx, dy) => {
+  const moveObject = (id, dx, dy, gesture = {}) => {
     edit(current => {
-      const target = current.objects.find(object => object.id === id)
+      const origins = gesture.originObjects || current.objects
+      const target = origins.find(object => object.id === id)
       if (!target) return current
       const movedIds = new Set([id])
       if (IS_CONNECTOR(target)) { if (target.bodyA) movedIds.add(target.bodyA); if (target.bodyB) movedIds.add(target.bodyB) }
       if (target.type === 'rod') current.objects.filter(object => object.rodId === id).forEach(object => movedIds.add(object.id))
-      return { ...current, objects: current.objects.map(object => {
+      let objects = current.objects.map(object => {
         if (!movedIds.has(object.id)) return object
-        if (object.type === 'arc') return { ...object, cx: object.cx + dx, cy: object.cy + dy }
-        if (IS_CONNECTOR(object)) return { ...object, ax: object.ax + dx, ay: object.ay + dy, bx: object.bx + dx, by: object.by + dy }
-        return { ...object, x: object.x + dx, y: object.y + dy }
-      }) }
+        const origin = origins.find(item => item.id === object.id) || object
+        if (object.type === 'arc') return { ...object, cx: origin.cx + dx, cy: origin.cy + dy }
+        if (IS_CONNECTOR(object)) return { ...object, ax: origin.ax + dx, ay: origin.ay + dy, bx: origin.bx + dx, by: origin.by + dy }
+        return { ...object, x: origin.x + dx, y: origin.y + dy }
+      })
+      const raw = objects.find(object => object.id === id)
+      const snapped = snapObject(raw, objects, { groundEnabled: current.ground, scale: gesture.scale, disabled: gesture.bypassSnap })
+      setSnapHint(snapped.hint)
+      objects = objects.map(object => object.id === id ? snapped.object : object)
+      return { ...current, objects }
     })
   }
 
@@ -259,7 +278,7 @@ export default function App() {
     updateObject({ [connectionMode.end === 'a' ? 'bodyA' : 'bodyB']: id })
     setConnectionMode(null)
   }
-  const select = id => { setSelectedId(id); setConnectionMode(null) }
+  const select = id => { setSelectedId(id); setConnectionMode(null); setSnapHint(null) }
 
   const changePreset = value => {
     const next = createScene(value)
@@ -320,7 +339,7 @@ export default function App() {
       <section className="stage" aria-label="模拟实验">
         <div className="stage-toolbar"><div className="stage-title"><h1>把物理，画出来。</h1><p>搭建一个场景，观察每一次动量传递。</p></div><label className="preset-picker"><span>实验示例</span><select aria-label="加载实验示例" value="" onChange={event => changePreset(event.target.value)}><option value="" disabled>选择示例</option>{PRESETS.map(preset => <option value={preset.id} key={preset.id}>{preset.name}</option>)}</select></label></div>
         <div className="simulation-toolbar"><div className="playback-actions"><button className={`button ${running ? 'button-soft' : 'button-primary'}`} aria-label={running ? '暂停模拟' : '运行模拟'} onClick={toggleRunning}><Icon name={running ? 'pause' : 'play'} size={14} />{running ? '暂停' : '运行'}</button><button className="icon-button" aria-label="重置模拟" title="恢复运行前的布局" onClick={reset}><Icon name="reset" size={17} /></button><button className="icon-button" aria-label="单步前进" title="前进 1/60 秒" onClick={step}><Icon name="step" size={16} /></button><select className="speed-picker" aria-label="模拟速度" value={speed} onChange={event => setSpeed(Number(event.target.value))}><option value={0.25}>0.25×</option><option value={0.5}>0.5×</option><option value={1}>1×</option><option value={2}>2×</option></select></div><div className="stage-meta"><span className={`live-pill ${running ? 'live' : ''}`}><span />{running ? '运行中' : '已暂停'}</span><output className="time-readout" aria-label="模拟时间">t = {simTime.toFixed(2)} s</output><button className="clear-button" onClick={() => { edit(current => ({ ...current, ground: false, objects: [], name: '自由实验' })); select(null) }}>清空</button></div></div>
-        <div className="canvas-wrap"><SimulationCanvas objects={scene.objects} groundEnabled={scene.ground} selectedId={selectedId} onSelect={select} onMove={moveObject} onDropTool={addObject} connectionMode={connectionMode} onConnectionPick={pickConnection} onCancelConnection={() => setConnectionMode(null)} onEndpointMove={moveEndpoint} trails={trails} />{scene.trails && <span className="trail-status">轨迹 · {trailCount} 个采样点</span>}</div>
+        <div className="canvas-wrap"><SimulationCanvas objects={scene.objects} groundEnabled={scene.ground} selectedId={selectedId} onSelect={select} onMove={moveObject} onDropTool={addObject} connectionMode={connectionMode} onConnectionPick={pickConnection} onCancelConnection={() => setConnectionMode(null)} onEndpointMove={moveEndpoint} onDragEnd={() => setSnapHint(null)} snapHint={snapHint} trails={trails} />{scene.trails && <span className="trail-status">轨迹 · {trailCount} 个采样点</span>}</div>
         <div className="measurement-strip" aria-label="实时测量"><div><span>水平总动量 <i>pₓ</i></span><output data-testid="momentum-x">{metrics.px.toFixed(3)} <small>kg·m/s</small></output></div><div><span>竖直总动量 <i>pᵧ</i></span><output data-testid="momentum-y">{metrics.py.toFixed(3)} <small>kg·m/s</small></output></div><div><span>总动能 <i>Eₖ</i></span><output data-testid="kinetic-energy">{metrics.kineticEnergy.toFixed(3)} <small>J</small></output></div></div>
         <div className="stage-footer"><span>100 px = 1 m · 右 / 下为正</span><span className="footer-spacer" /><span className="shortcut-key">空格</span><span>运行 / 暂停</span></div>
       </section>

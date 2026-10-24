@@ -158,11 +158,11 @@ test('parser supplies defaults and bounds text and environment settings', () => 
 
 test('dangling, non-body, and duplicate endpoint references are removed', () => {
   const ball = makeObject('ball', 10, 20, 'ball')
-  const arc = makeObject('arc', 50, 50, 'arc')
+  const ground = makeObject('ground', 50, 50, 'ground')
   const rod = { ...makeObject('rod', 50, 50, 'rod'), bodyA: 'ball', bodyB: 'ball' }
-  const spring = { ...makeObject('spring', 50, 50, 'spring'), bodyA: 'missing', bodyB: 'arc' }
+  const spring = { ...makeObject('spring', 50, 50, 'spring'), bodyA: 'missing', bodyB: 'ground' }
   const rope = { ...makeObject('rope', 50, 50, 'rope'), bodyA: 12, bodyB: null }
-  const parsed = parseScene(pack([ball, arc, rod, spring, rope]))
+  const parsed = parseScene(pack([ball, ground, rod, spring, rope]))
   assert.equal(parsed.objects[2].bodyA, 'ball')
   assert.equal(parsed.objects[2].bodyB, '')
   assert.equal(parsed.objects[3].bodyA, '')
@@ -208,7 +208,7 @@ test('legal inspector boundary values survive save and import without silent cha
   for (const upper of [false, true]) {
     const objects = TYPES.map(type => makeObject(type, 10000, -10000, `id-${type}`))
     for (const object of objects) {
-      if (object.type === 'ball' || object.type === 'block') {
+      if (['ball', 'block', 'arc'].includes(object.type)) {
         object.mass = upper ? 1000 : 0.05
         object.vx = upper ? 5000 : -5000
         object.vy = upper ? -5000 : 5000
@@ -224,6 +224,33 @@ test('legal inspector boundary values survive save and import without silent cha
     const original = pack(objects, { gravityValue: upper ? 30 : 0, frictionValue: upper ? 1 : 0 })
     assert.deepEqual(parseScene(JSON.stringify(original)), original)
   }
+})
+
+test('old trough scenes acquire motion properties and explicit fixed state is respected', () => {
+  const legacy = { id: 'arc', type: 'arc', name: 'Old trough', cx: 350, cy: 210, radius: 180, startAngle: 0, angle: 180 }
+  const imported = parseScene(pack([legacy])).objects[0]
+  assert.equal(imported.mass, 5)
+  assert.equal(imported.fixed, false)
+  assert.equal(imported.vx, 0)
+  assert.equal(imported.vy, 0)
+  assert.equal(parseScene(pack([{ ...legacy, fixed: true }])).objects[0].fixed, true)
+  assert.equal(imported.cx, legacy.cx)
+  assert.equal(imported.cy, legacy.cy)
+})
+
+test('trough endpoints survive import and deletion preserves the current center', () => {
+  const arc = makeObject('arc', 120, 80, 'arc')
+  const rod = { ...makeObject('rod', 300, 300, 'rod'), bodyA: arc.id }
+  const spring = { ...makeObject('spring', 300, 300, 'spring'), bodyB: arc.id }
+  const scene = parseScene(pack([arc, rod, spring]))
+  assert.equal(scene.objects[1].bodyA, arc.id)
+  assert.equal(scene.objects[2].bodyB, arc.id)
+  const without = removeObject(scene, arc.id)
+  assert.deepEqual(endpoints(without.objects[0], without.objects).a, { x: 120, y: 80 })
+  assert.deepEqual(endpoints(without.objects[1], without.objects).b, { x: 120, y: 80 })
+  const bead = { ...makeObject('ball', 120, 80, 'bead'), rodId: rod.id }
+  const aligned = alignGuides([arc, rod, bead]).at(-1)
+  assert.ok(Number.isFinite(aligned.x) && Number.isFinite(aligned.y))
 })
 
 test('alignGuides projects a bead onto a fixed rail without mutating its source', () => {

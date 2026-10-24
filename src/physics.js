@@ -1,3 +1,5 @@
+import { arcBase } from './arcGeometry.js'
+
 // 统一采用 100 px = 1 m；画布的 y 轴正方向向下。
 const SCALE = 100
 const EPSILON = 1e-9
@@ -6,15 +8,18 @@ const ITERATIONS = 10
 
 const finite = (value, fallback = 0) => Number.isFinite(value) ? value : fallback
 const clamp = (value, minimum, maximum) => Math.min(maximum, Math.max(minimum, value))
-const isBody = (object) => object?.type === 'ball' || object?.type === 'block'
-const mass = (object) => Math.max(0.01, finite(object.mass, 1))
-const inverseMass = (object) => isBody(object) && !object.fixed ? 1 / mass(object) : 0
-const velocity = (object) => ({ x: object?.fixed ? 0 : finite(object?.vx), y: object?.fixed ? 0 : finite(object?.vy) })
+const isBody = (object) => ['ball', 'block', 'arc'].includes(object?.type)
+const isFixed = (object) => object?.fixed || (object?.type === 'arc' && !Number.isFinite(object.mass) && object.fixed !== false)
+const mass = (object) => Math.max(0.01, finite(object.mass, object.type === 'arc' ? 5 : 1))
+const inverseMass = (object) => isBody(object) && !isFixed(object) ? 1 / mass(object) : 0
+const velocity = (object) => ({ x: isFixed(object) ? 0 : finite(object?.vx), y: isFixed(object) ? 0 : finite(object?.vy) })
+const position = (object) => object.type === 'arc' ? { x: finite(object.cx), y: finite(object.cy) } : { x: finite(object.x), y: finite(object.y) }
+const hasBase = (object) => Number.isFinite(object.mass) || typeof object.fixed === 'boolean'
 
 function pointFor(connector, side, byId) {
   const body = byId.get(connector[`body${side.toUpperCase()}`])
   if (body && body.id !== connector.id && (isBody(body) || body.type === 'arc')) {
-    return { x: finite(body.x, finite(body.cx)), y: finite(body.y, finite(body.cy)) }
+    return position(body)
   }
   return { x: finite(connector[`${side}x`]), y: finite(connector[`${side}y`]) }
 }
@@ -41,6 +46,10 @@ function geometry(connector, byId) {
 }
 
 function support(body, nx, ny) {
+  if (body.type === 'arc') {
+    const base = arcBase(body)
+    return Math.abs(nx) * (base.right - base.left) / 2 + Math.abs(ny) * (base.bottom - base.top) / 2
+  }
   return body.type === 'ball'
     ? Math.max(1, finite(body.radius, 18))
     : Math.abs(nx) * Math.max(1, finite(body.width, 80)) / 2 + Math.abs(ny) * Math.max(1, finite(body.height, 50)) / 2
@@ -48,8 +57,8 @@ function support(body, nx, ny) {
 
 function translate(body, x, y) {
   if (!inverseMass(body)) return
-  body.x += x
-  body.y += y
+  if (body.type === 'arc') { body.cx += x; body.cy += y }
+  else { body.x += x; body.y += y }
 }
 
 function accelerate(body, x, y) {
@@ -153,7 +162,7 @@ function guideConstraint(ball, byId, friction) {
   }
 }
 
-function contactImpulse(a, b, nx, ny, penetration, friction) {
+function contactImpulse(a, b, nx, ny, penetration, friction, contactRestitution) {
   const wa = inverseMass(a)
   const wb = inverseMass(b)
   const weight = wa + wb
@@ -165,7 +174,7 @@ function contactImpulse(a, b, nx, ny, penetration, friction) {
   const vb = velocity(b)
   const relativeNormal = (vb.x - va.x) * nx + (vb.y - va.y) * ny
   if (relativeNormal >= 0) return
-  const restitution = Math.min(clamp(finite(a?.restitution, 0.7), 0, 1), clamp(finite(b?.restitution, a?.restitution ?? 0.7), 0, 1))
+  const restitution = contactRestitution ?? Math.min(clamp(finite(a?.restitution, 0.7), 0, 1), clamp(finite(b?.restitution, a?.restitution ?? 0.7), 0, 1))
   // 非完全弹性的静态接触在低速时静止；物体间碰撞仍严格采用恢复系数。
   const effectiveRestitution = !b && restitution < 1 && relativeNormal >= -15 ? 0 : restitution
   const impulse = -(1 + effectiveRestitution) * relativeNormal / weight
@@ -235,6 +244,15 @@ function bodyContacts(bodies, friction) {
 }
 
 function groundContact(body, ground, previous, friction) {
+  if (body.type === 'arc') {
+    const base = arcBase(body)
+    const left = Math.min(ground.x, ground.x + ground.width)
+    const right = Math.max(ground.x, ground.x + ground.width)
+    const previousBottom = base.bottom + previous.y - body.cy
+    if (base.right < left || base.left > right || base.bottom < ground.y || previousBottom > ground.y + 15) return
+    contactImpulse(body, null, 0, 1, base.bottom - ground.y, friction)
+    return
+  }
   const halfWidth = support(body, 1, 0)
   const halfHeight = support(body, 0, 1)
   const left = Math.min(ground.x, ground.x + ground.width)
@@ -250,7 +268,7 @@ function withinArc(degrees, start, sweep) {
   return delta <= Math.max(0, sweep) + 1e-7 || sweep >= 360
 }
 
-function arcContact(body, arc, previous, friction) {
+function arcContact(body, arc, previous, previousArc, friction) {
   const radius = Math.max(1, finite(arc.radius, 160))
   const dx = body.x - arc.cx
   const dy = body.y - arc.cy
@@ -261,14 +279,14 @@ function arcContact(body, arc, previous, friction) {
   if (withinArc(angle, start, sweep)) {
     const radialX = distance > EPSILON ? dx / distance : 1
     const radialY = distance > EPSILON ? dy / distance : 0
-    const previousDistance = Math.hypot(previous.x - arc.cx, previous.y - arc.cy)
+    const previousDistance = Math.hypot(previous.x - previousArc.x, previous.y - previousArc.y)
     const oldSigned = previousDistance - radius
     const signed = distance - radius
     const side = Math.sign(oldSigned) || Math.sign(signed) || -1
     const extent = support(body, radialX, radialY) + 3
     const penetration = extent - side * signed
     if (penetration < 0) return
-    contactImpulse(body, null, -side * radialX, -side * radialY, penetration, friction)
+    contactImpulse(body, arc, -side * radialX, -side * radialY, penetration, friction, clamp(finite(body.restitution, 0.7), 0, 1))
     return
   }
   // 开放弧槽的两个端点也有碰撞，避免从端部穿过。
@@ -282,7 +300,75 @@ function arcContact(body, arc, previous, friction) {
     const nx = pointDistance > EPSILON ? pointX / pointDistance : 0
     const ny = pointDistance > EPSILON ? pointY / pointDistance : 1
     const extent = support(body, nx, ny) + 3
-    if (pointDistance <= extent) contactImpulse(body, null, nx, ny, extent - pointDistance, friction)
+    if (pointDistance <= extent) contactImpulse(body, arc, nx, ny, extent - pointDistance, friction, clamp(finite(body.restitution, 0.7), 0, 1))
+  }
+}
+
+function rectangleContact(body, rectangle, owner, friction) {
+  const centerX = (rectangle.left + rectangle.right) / 2
+  const centerY = (rectangle.top + rectangle.bottom) / 2
+  const halfWidth = (rectangle.right - rectangle.left) / 2
+  const halfHeight = (rectangle.bottom - rectangle.top) / 2
+  const dx = centerX - body.x
+  const dy = centerY - body.y
+  if (body.type === 'block') {
+    const overlapX = halfWidth + body.width / 2 - Math.abs(dx)
+    const overlapY = halfHeight + body.height / 2 - Math.abs(dy)
+    if (overlapX < 0 || overlapY < 0) return
+    if (overlapX < overlapY) contactImpulse(body, owner, Math.sign(dx) || 1, 0, overlapX, friction)
+    else contactImpulse(body, owner, 0, Math.sign(dy) || 1, overlapY, friction)
+    return
+  }
+  const localX = body.x - centerX
+  const localY = body.y - centerY
+  const closestX = clamp(localX, -halfWidth, halfWidth)
+  const closestY = clamp(localY, -halfHeight, halfHeight)
+  const normalX = closestX - localX
+  const normalY = closestY - localY
+  const distance = Math.hypot(normalX, normalY)
+  if (distance > body.radius) return
+  if (distance > EPSILON) contactImpulse(body, owner, normalX / distance, normalY / distance, body.radius - distance, friction)
+  else {
+    const exitX = halfWidth - Math.abs(localX)
+    const exitY = halfHeight - Math.abs(localY)
+    if (exitX < exitY) contactImpulse(body, owner, -(Math.sign(localX) || 1), 0, body.radius + exitX, friction)
+    else contactImpulse(body, owner, 0, -(Math.sign(localY) || 1), body.radius + exitY, friction)
+  }
+}
+
+function arcShellContacts(body, arc, friction) {
+  if (!hasBase(arc)) return
+  rectangleContact(body, arcBase(arc), arc, friction)
+  // 外立边与水平底座构成槽体外壳；内部圆弧仍由径向接触处理。
+  for (const side of ['left', 'right']) {
+    const points = [arc.startAngle, arc.startAngle + arc.angle]
+    for (const angle of [0, 90, 180, 270]) if (withinArc(angle, arc.startAngle, arc.angle)) points.push(angle)
+    const vertices = points.map(degrees => ({ x: arc.cx + arc.radius * Math.cos(degrees * Math.PI / 180), y: arc.cy + arc.radius * Math.sin(degrees * Math.PI / 180) }))
+    const extreme = vertices.reduce((best, point) => (side === 'left' ? point.x < best.x : point.x > best.x) ? point : best)
+    const base = arcBase(arc)
+    if (base.top <= extreme.y) continue
+    const rectangle = side === 'left'
+      ? { left: base.left, right: extreme.x - 3, top: extreme.y, bottom: base.top }
+      : { left: extreme.x + 3, right: base.right, top: extreme.y, bottom: base.top }
+    rectangleContact(body, rectangle, arc, friction)
+  }
+}
+
+function arcBaseContacts(arcs, friction) {
+  for (let first = 0; first < arcs.length; first += 1) {
+    const a = arcs[first]
+    if (!hasBase(a)) continue
+    for (let second = first + 1; second < arcs.length; second += 1) {
+      const b = arcs[second]
+      if (!hasBase(b) || (!inverseMass(a) && !inverseMass(b))) continue
+      const boxA = arcBase(a)
+      const boxB = arcBase(b)
+      const overlapX = Math.min(boxA.right, boxB.right) - Math.max(boxA.left, boxB.left)
+      const overlapY = Math.min(boxA.bottom, boxB.bottom) - Math.max(boxA.top, boxB.top)
+      if (overlapX < 0 || overlapY < 0) continue
+      if (overlapX < overlapY) contactImpulse(a, b, Math.sign(boxB.left + boxB.right - boxA.left - boxA.right) || 1, 0, overlapX, friction)
+      else contactImpulse(a, b, 0, Math.sign(boxB.top + boxB.bottom - boxA.top - boxA.bottom) || 1, overlapY, friction)
+    }
   }
 }
 
@@ -311,6 +397,7 @@ export function integrate(objects = [], environment = {}, dt = 0) {
   if (!Number.isFinite(dt) || dt <= 0) return next
   const byId = new Map(next.map((object) => [object.id, object]))
   const bodies = next.filter(isBody)
+  const solids = bodies.filter(object => object.type !== 'arc')
   const connectors = next.filter((object) => ['rod', 'rope', 'spring'].includes(object.type))
   const arcs = next.filter((object) => object.type === 'arc')
   const grounds = environment.ground ? next.filter((object) => object.type === 'ground') : []
@@ -318,32 +405,35 @@ export function integrate(objects = [], environment = {}, dt = 0) {
   const friction = environment.friction ? clamp(finite(environment.frictionValue, 0.2), 0, 2) : 0
   const gravity = environment.gravity ? finite(environment.gravityValue, 9.8) * SCALE : 0
   for (const body of bodies) {
-    body.x = finite(body.x)
-    body.y = finite(body.y)
-    body.vx = body.fixed ? 0 : finite(body.vx)
-    body.vy = body.fixed ? 0 : finite(body.vy)
+    if (body.type === 'arc') { body.cx = finite(body.cx); body.cy = finite(body.cy) }
+    else { body.x = finite(body.x); body.y = finite(body.y) }
+    body.vx = isFixed(body) ? 0 : finite(body.vx)
+    body.vy = isFixed(body) ? 0 : finite(body.vy)
   }
   // 过长帧间隔由调用方拆分；此上限避免休眠恢复后执行无界积分。
   let remaining = Math.min(dt, 0.25)
   while (remaining > EPSILON) {
     const step = timestep(bodies, connectors, byId, remaining)
-    const previous = new Map(bodies.map((body) => [body.id, { x: body.x, y: body.y }]))
+    const previous = new Map(bodies.map((body) => [body.id, position(body)]))
     springForces(connectors, byId, step)
     for (const body of bodies) {
       if (!inverseMass(body)) continue
       body.vy += gravity * step
-      body.x += body.vx * step
-      body.y += body.vy * step
+      translate(body, body.vx * step, body.vy * step)
     }
     for (let iteration = 0; iteration < ITERATIONS; iteration += 1) {
       for (const connector of connectors) if (connector.type !== 'spring') distanceConstraint(connector, byId)
       for (const ball of guides) guideConstraint(ball, byId, friction)
-      bodyContacts(bodies, friction)
-      for (const body of bodies) {
-        if (!inverseMass(body)) continue
-        for (const ground of grounds) groundContact(body, ground, previous.get(body.id), friction)
-        for (const arc of arcs) arcContact(body, arc, previous.get(body.id), friction)
+      bodyContacts(solids, friction)
+      arcBaseContacts(arcs, friction)
+      for (const body of solids) {
+        for (const arc of arcs) {
+          if (!inverseMass(body) && !inverseMass(arc)) continue
+          arcContact(body, arc, previous.get(body.id), previous.get(arc.id), friction)
+          arcShellContacts(body, arc, friction)
+        }
       }
+      for (const body of bodies) if (inverseMass(body)) for (const ground of grounds) groundContact(body, ground, previous.get(body.id), friction)
     }
     remaining -= step
   }

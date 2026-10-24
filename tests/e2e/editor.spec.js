@@ -330,3 +330,135 @@ test('单步记录轨迹，重置和编辑清空路径，刷新只保留开关',
   await editNumber(page, '位置 X', 3.2)
   await expect(page.locator('.trail-status')).toHaveText('轨迹 · 0 个采样点')
 })
+
+async function dragStart(page, from) {
+  const point = await canvasPoint(page, from.x, from.y)
+  await page.mouse.move(point.x, point.y)
+  await page.mouse.down()
+}
+
+async function dragMove(page, to) {
+  const point = await canvasPoint(page, to.x, to.y)
+  await page.mouse.move(point.x, point.y, { steps: 6 })
+}
+
+test('小球靠近竖直切点自动吸附，吸附后继续拖动可脱离', async ({ page }) => {
+  await preset(page, 'arc')
+  await page.locator('.scene-item').filter({ hasText: '小球 A' }).click()
+  await editNumber(page, '位置 X', 4.3)
+  await editNumber(page, '位置 Y', 1.4)
+  const initial = await exportScene(page)
+  const arc = initial.objects.find(object => object.type === 'arc')
+  const ball = initial.objects.find(object => object.id === 'ball-a')
+  const target = { x: arc.cx - arc.radius + ball.radius + 3, y: arc.cy }
+
+  await dragStart(page, ball)
+  await dragMove(page, { x: target.x + 5, y: target.y + 4 })
+  await expect(page.locator('.canvas-snap-notice')).toContainText('小球已对齐竖直切点')
+  expect(Number(await numberField(page, '位置 X').inputValue()) * 100).toBeCloseTo(target.x, 2)
+  expect(Number(await numberField(page, '位置 Y').inputValue()) * 100).toBeCloseTo(target.y, 2)
+
+  const detached = { x: target.x + 75, y: target.y - 60 }
+  await dragMove(page, detached)
+  await expect(page.locator('.canvas-snap-notice')).toHaveCount(0)
+  await page.mouse.up()
+  let scene = await exportScene(page)
+  let moved = scene.objects.find(object => object.id === ball.id)
+  expect(Math.abs(moved.x - detached.x)).toBeLessThan(2)
+  expect(Math.abs(moved.y - detached.y)).toBeLessThan(2)
+
+  const right = { x: arc.cx + arc.radius - ball.radius - 3, y: arc.cy }
+  await dragStart(page, moved)
+  await dragMove(page, { x: right.x - 4, y: right.y + 3 })
+  await expect(page.locator('.canvas-snap-notice')).toContainText('小球已对齐竖直切点')
+  await page.mouse.up()
+  await expect(page.locator('.canvas-snap-notice')).toHaveCount(0)
+  scene = await exportScene(page)
+  moved = scene.objects.find(object => object.id === ball.id)
+  expect(moved.x).toBeCloseTo(right.x, 3)
+  expect(moved.y).toBeCloseTo(right.y, 3)
+})
+
+test('吸附有距离边界且按住 Alt 可以临时禁用', async ({ page }) => {
+  await preset(page, 'arc')
+  await page.locator('.scene-item').filter({ hasText: '小球 A' }).click()
+  await editNumber(page, '位置 X', 4.3)
+  await editNumber(page, '位置 Y', 1.4)
+  const scene = await exportScene(page)
+  const arc = scene.objects.find(object => object.type === 'arc')
+  const ball = scene.objects.find(object => object.id === 'ball-a')
+  const target = { x: arc.cx - arc.radius + ball.radius + 3, y: arc.cy }
+  const outside = { x: target.x, y: target.y + 35 }
+  await dragStart(page, ball)
+  await dragMove(page, outside)
+  await expect(page.locator('.canvas-snap-notice')).toHaveCount(0)
+  await page.mouse.up()
+  const moved = (await exportScene(page)).objects.find(object => object.id === ball.id)
+  expect(Math.abs(moved.y - outside.y)).toBeLessThan(2)
+
+  const bypassed = { x: target.x + 8, y: target.y + 8 }
+  await dragStart(page, moved)
+  await page.keyboard.down('Alt')
+  await dragMove(page, bypassed)
+  await expect(page.locator('.canvas-snap-notice')).toHaveCount(0)
+  await page.mouse.up()
+  await page.keyboard.up('Alt')
+  const result = (await exportScene(page)).objects.find(object => object.id === ball.id)
+  expect(Math.abs(result.x - bypassed.x)).toBeLessThan(2)
+  expect(Math.abs(result.y - bypassed.y)).toBeLessThan(2)
+})
+
+test('槽的水平底座吸附地面并保留水平拖动，地面关闭时不吸附', async ({ page }) => {
+  await preset(page, 'arc')
+  await editNumber(page, '位置 Y', 2)
+  await dragStart(page, { x: 365, y: 200 })
+  await dragMove(page, { x: 425, y: 292 })
+  await expect(page.locator('.canvas-snap-notice')).toContainText('槽底已贴合地面')
+  expect(Number(await numberField(page, '位置 Y').inputValue())).toBeCloseTo(2.86, 3)
+  await dragMove(page, { x: 485, y: 294 })
+  await expect(page.locator('.canvas-snap-notice')).toContainText('槽底已贴合地面')
+  await page.mouse.up()
+  let scene = await exportScene(page)
+  let arc = scene.objects.find(object => object.id === 'arc-a')
+  const ground = scene.objects.find(object => object.type === 'ground')
+  expect(Math.abs(arc.cx - 485)).toBeLessThan(2)
+  expect(arc.cy + arc.radius + 24).toBeCloseTo(ground.y, 3)
+
+  await dragStart(page, { x: arc.cx, y: arc.cy })
+  await dragMove(page, { x: arc.cx, y: 225 })
+  await page.mouse.up()
+  await page.getByRole('checkbox', { name: /^地面/ }).uncheck()
+  scene = await exportScene(page)
+  arc = scene.objects.find(object => object.id === 'arc-a')
+  await dragStart(page, { x: arc.cx, y: arc.cy })
+  await dragMove(page, { x: arc.cx, y: 290 })
+  await expect(page.locator('.canvas-snap-notice')).toHaveCount(0)
+  await page.mouse.up()
+  const result = (await exportScene(page)).objects.find(object => object.id === 'arc-a')
+  expect(Math.abs(result.cy - 290)).toBeLessThan(2)
+})
+
+test('可动槽参与动量交换，固定开关和连接端点均可用', async ({ page }) => {
+  await preset(page, 'arc')
+  await expect(numberField(page, '质量')).toHaveValue('5')
+  await expect(page.getByRole('checkbox', { name: /^固定物体/ })).not.toBeChecked()
+  const initialX = Number(await numberField(page, '位置 X').inputValue())
+  const momentum = Number.parseFloat(await page.getByTestId('momentum-x').textContent())
+  await runUntil(page, 0.65)
+  expect(Math.abs(Number(await numberField(page, '位置 X').inputValue()) - initialX)).toBeGreaterThan(0.005)
+  expect(Math.abs(Number(await numberField(page, '水平速度').inputValue()))).toBeGreaterThan(0.01)
+  expect(Number.parseFloat(await page.getByTestId('momentum-x').textContent())).toBeCloseTo(momentum, 2)
+
+  await page.getByRole('button', { name: '重置模拟' }).click()
+  await page.getByRole('checkbox', { name: /^固定物体/ }).check()
+  await runUntil(page, 0.35)
+  expect(Number(await numberField(page, '位置 X').inputValue())).toBeCloseTo(initialX, 4)
+  expect(Number(await numberField(page, '水平速度').inputValue())).toBe(0)
+  await page.getByRole('button', { name: '重置模拟' }).click()
+  await page.getByRole('button', { name: '添加弹簧', exact: true }).click()
+  await page.getByRole('combobox', { name: '端点 A', exact: true }).selectOption('arc-a')
+  await expect(page.getByRole('combobox', { name: '端点 A', exact: true })).toHaveValue('arc-a')
+  await page.getByRole('combobox', { name: '端点 A', exact: true }).selectOption('')
+  expect(Number(await numberField(page, 'A 位置 X').inputValue())).toBeCloseTo(initialX, 4)
+  expect(Number(await numberField(page, 'A 位置 Y').inputValue())).toBeCloseTo(2.86, 4)
+})

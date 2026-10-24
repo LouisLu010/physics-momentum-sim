@@ -1,12 +1,13 @@
 import { COLORS } from './model.js'
+import { angleOnArc, arcBase, ARC_WALL_HALF } from './arcGeometry.js'
 export const WORLD_SIZE = { width: 900, height: 620 }
 
 export function connectorEndpoints(object, objects) {
   const first = objects.find((candidate) => candidate.id === object.bodyA)
   const second = objects.find((candidate) => candidate.id === object.bodyB)
   return {
-    a: first ? { x: first.x, y: first.y } : { x: object.ax, y: object.ay },
-    b: second ? { x: second.x, y: second.y } : { x: object.bx, y: object.by },
+    a: first ? { x: first.cx ?? first.x, y: first.cy ?? first.y } : { x: object.ax, y: object.ay },
+    b: second ? { x: second.cx ?? second.x, y: second.cy ?? second.y } : { x: object.bx, y: object.by },
   }
 }
 
@@ -17,8 +18,40 @@ function distanceToSegment(point, first, second) {
   return Math.hypot(point.x - first.x - t * dx, point.y - first.y - t * dy)
 }
 
-function withinArc(angle, startAngle, sweep) {
-  return ((angle - startAngle) % 360 + 360) % 360 <= sweep
+function arcPoint(object, degrees) {
+  const radians = degrees * Math.PI / 180
+  return { x: object.cx + object.radius * Math.cos(radians), y: object.cy + object.radius * Math.sin(radians) }
+}
+
+function arcBodyPolygon(object) {
+  const count = Math.max(2, Math.ceil(object.angle / 3))
+  const points = Array.from({ length: count + 1 }, (_, index) => arcPoint(object, object.startAngle + object.angle * index / count))
+  // 下半圆槽的外壳可自然延伸到平底；其他朝向保留薄弧壁和独立水平底座。
+  if (points.some(point => point.y < object.cy - 1e-6)) return null
+  const base = arcBase(object)
+  return [...points, { x: base.left, y: points.at(-1).y }, { x: base.left, y: base.bottom }, { x: base.right, y: base.bottom }, { x: base.right, y: points[0].y }]
+}
+
+function pointInPolygon(point, polygon) {
+  let inside = false
+  for (let index = 0, previous = polygon.length - 1; index < polygon.length; previous = index, index += 1) {
+    const a = polygon[index]
+    const b = polygon[previous]
+    if ((a.y > point.y) !== (b.y > point.y) && point.x < (b.x - a.x) * (point.y - a.y) / (b.y - a.y) + a.x) inside = !inside
+  }
+  return inside
+}
+
+function arcOuterSides(object) {
+  const angles = [object.startAngle, object.startAngle + object.angle, ...[0, 90, 180, 270].filter(angle => angleOnArc(angle, object.startAngle, object.angle))]
+  const points = angles.map(angle => arcPoint(object, angle))
+  const left = points.reduce((extreme, point) => point.x < extreme.x ? point : extreme)
+  const right = points.reduce((extreme, point) => point.x > extreme.x ? point : extreme)
+  const base = arcBase(object)
+  return [
+    { left: base.left, right: left.x - ARC_WALL_HALF, top: left.y, bottom: base.top, outerX: base.left },
+    { left: right.x + ARC_WALL_HALF, right: base.right, top: right.y, bottom: base.top, outerX: base.right },
+  ]
 }
 
 export function hitObject(objects, point, scale, groundEnabled, bodiesOnly = false) {
@@ -29,12 +62,19 @@ export function hitObject(objects, point, scale, groundEnabled, bodiesOnly = fal
     const object = sorted[index]
     if (object.type === 'ball' && Math.hypot(point.x - object.x, point.y - object.y) <= object.radius + padding) return object
     if (object.type === 'block' && Math.abs(point.x - object.x) <= object.width / 2 + padding && Math.abs(point.y - object.y) <= object.height / 2 + padding) return object
-    if (bodiesOnly) continue
     if (object.type === 'arc') {
       const distance = Math.hypot(point.x - object.cx, point.y - object.cy)
       const angle = Math.atan2(point.y - object.cy, point.x - object.cx) * 180 / Math.PI
-      if (distance <= padding || (Math.abs(distance - object.radius) <= padding + 5 && withinArc(angle, object.startAngle, object.angle))) return object
+      if (distance <= padding || (Math.abs(distance - object.radius) <= padding + 5 && angleOnArc(angle, object.startAngle, object.angle))) return object
+      const base = arcBase(object)
+      if (point.x >= base.left - padding && point.x <= base.right + padding && point.y >= base.top - padding && point.y <= base.bottom + padding) return object
+      const polygon = arcBodyPolygon(object)
+      if (polygon && (pointInPolygon(point, polygon) || polygon.some((first, index) => distanceToSegment(point, first, polygon[(index + 1) % polygon.length]) <= padding))) return object
+      if (!polygon) {
+        if (arcOuterSides(object).some(side => point.x >= side.left - padding && point.x <= side.right + padding && point.y >= side.top - padding && point.y <= side.bottom + padding)) return object
+      }
     }
+    if (bodiesOnly) continue
     if (object.type === 'ground' && groundEnabled && distanceToSegment(point, { x: object.x, y: object.y }, { x: object.x + object.width, y: object.y }) <= padding + 3) return object
     if (['rod', 'rope', 'spring'].includes(object.type)) {
       const { a, b } = connectorEndpoints(object, objects)
@@ -121,6 +161,51 @@ function drawArc(context, object, selected, scale) {
   const start = object.startAngle * Math.PI / 180
   const end = (object.startAngle + object.angle) * Math.PI / 180
   const point = (angle, radius = object.radius) => ({ x: object.cx + radius * Math.cos(angle), y: object.cy + radius * Math.sin(angle) })
+  const base = arcBase(object)
+  const polygon = arcBodyPolygon(object)
+  context.strokeStyle = '#93b3c8'
+  context.lineWidth = 1.2 / scale
+  if (polygon) {
+    context.fillStyle = '#e7f0f5'
+    context.beginPath()
+    const first = point(start)
+    context.moveTo(first.x, first.y)
+    context.arc(object.cx, object.cy, object.radius, start, end)
+    context.lineTo(base.left, point(end).y)
+    context.lineTo(base.left, base.bottom)
+    context.lineTo(base.right, base.bottom)
+    context.lineTo(base.right, first.y)
+    context.closePath()
+    context.fill()
+    context.stroke()
+  } else {
+    context.fillStyle = '#e7f0f5'
+    for (const side of arcOuterSides(object)) {
+      context.fillRect(side.left, side.top, side.right - side.left, side.bottom - side.top)
+      line(context, { x: side.outerX, y: side.top }, { x: side.outerX, y: side.bottom })
+      line(context, { x: side.left, y: side.top }, { x: side.right, y: side.top })
+    }
+  }
+  context.fillStyle = '#d8e7f0'
+  context.fillRect(base.left, base.top, base.right - base.left, base.bottom - base.top)
+  context.strokeStyle = selected ? '#477e9d' : '#799fb8'
+  context.lineWidth = 1.5 / scale
+  context.beginPath()
+  context.moveTo(base.left, base.top)
+  context.lineTo(base.left, base.bottom)
+  context.lineTo(base.right, base.bottom)
+  context.lineTo(base.right, base.top)
+  context.stroke()
+  context.lineWidth = 0.8 / scale
+  context.strokeStyle = '#a9c4d5'
+  line(context, { x: base.left, y: base.top }, { x: base.right, y: base.top })
+  if ((base.bottom - base.top) * scale >= 12) {
+    context.fillStyle = '#537d96'
+    context.font = `${10 / scale}px "SFMono-Regular", Consolas, monospace`
+    context.textAlign = 'center'
+    context.textBaseline = 'middle'
+    context.fillText(object.fixed || (!Number.isFinite(object.mass) && object.fixed === undefined) ? '固定' : `${object.mass ?? 5} kg`, (base.left + base.right) / 2, (base.top + base.bottom) / 2)
+  }
   context.strokeStyle = COLORS.arc
   context.lineWidth = Math.max(7, 2.5 / scale)
   context.beginPath()
@@ -309,7 +394,26 @@ function drawTrails(context, objects, trails, scale) {
   }
 }
 
-export function drawScene(canvas, { size, view, objects, groundEnabled, selectedId, connectionMode, trails = {} }) {
+function drawSnapHint(context, hint, scale) {
+  if (!hint) return
+  context.save()
+  context.strokeStyle = '#4d8765'
+  context.fillStyle = '#f3faf1'
+  context.lineWidth = 1.5 / scale
+  if (hint.line) {
+    context.setLineDash([5 / scale, 4 / scale])
+    line(context, { x: hint.line.x1, y: hint.line.y1 }, { x: hint.line.x2, y: hint.line.y2 })
+    context.setLineDash([])
+  }
+  if (hint.point) {
+    circle(context, hint.point.x, hint.point.y, 5 / scale)
+    context.fill()
+    context.stroke()
+  }
+  context.restore()
+}
+
+export function drawScene(canvas, { size, view, objects, groundEnabled, selectedId, connectionMode, snapHint = null, trails = {} }) {
   const context = canvas.getContext('2d')
   if (!context || size.width <= 0 || size.height <= 0) return
   const dpr = canvas.width / size.width
@@ -343,6 +447,7 @@ export function drawScene(canvas, { size, view, objects, groundEnabled, selected
     drawBody(context, object, selectedId === object.id, transform.scale, size.width < 560)
     context.restore()
   }
+  drawSnapHint(context, snapHint, transform.scale)
   context.setTransform(dpr, 0, 0, dpr, 0, 0)
   const rulerWidth = 100 * transform.scale
   if (rulerWidth > 20 && rulerWidth < size.width / 2) {

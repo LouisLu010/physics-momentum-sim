@@ -1,7 +1,7 @@
 import { Icon, NumberField, SelectField, Toggle } from './ui.jsx'
 import { COLORS, LABELS, SCALE as PIXELS_PER_METER } from './model.js'
 const CONNECTORS = new Set(['rod', 'rope', 'spring'])
-const BODIES = new Set(['ball', 'block'])
+const BODIES = new Set(['ball', 'block', 'arc'])
 
 function PositionFields({ object, onChange, xKey = 'x', yKey = 'y', prefix = '' }) {
   return (
@@ -66,6 +66,7 @@ function BodyFields({ selected, objects, onUpdateObject }) {
       <NumberField label="竖直速度" value={(selected.vy || 0) / PIXELS_PER_METER} suffix="m/s" min={-50} max={50} step={0.1} onChange={(value) => onUpdateObject({ vy: value * PIXELS_PER_METER })} />
       <NumberField label="恢复系数" value={selected.restitution ?? 0.8} min={0} max={1} step={0.05} onChange={(restitution) => onUpdateObject({ restitution })} />
       <Toggle checked={selected.fixed} onChange={(fixed) => onUpdateObject({ fixed, ...(fixed ? { vx: 0, vy: 0 } : {}) })} label="固定物体" detail="固定时不受力移动" />
+      {selected.type === 'arc' && <p className="property-help">槽体可在平底上滑动；开启固定后作为静止轨道。</p>}
       {selected.type === 'ball' && (
         <>
           <SelectField label="杆上滑动" value={selected.rodId} onChange={(rodId) => onUpdateObject({ rodId })}>
@@ -88,7 +89,7 @@ function EndpointFields({ end, selected, objects, onUpdateObject, onStartConnect
   const changeBody = (id) => {
     // 解绑时保留当前连接点，避免锚点跳回旧坐标。
     const previous = objects.find((object) => object.id === selected[bodyKey])
-    onUpdateObject({ [bodyKey]: id, ...(!id && previous ? { [`${end}x`]: previous.x, [`${end}y`]: previous.y } : {}) })
+    onUpdateObject({ [bodyKey]: id, ...(!id && previous ? { [`${end}x`]: previous.type === 'arc' ? previous.cx : previous.x, [`${end}y`]: previous.type === 'arc' ? previous.cy : previous.y } : {}) })
   }
 
   return (
