@@ -2,6 +2,19 @@
 
 一个无需账号和后端的二维物理实验画布，使用 React、Vite 和 Canvas 构建。
 
+在线访问：[Momentum Lab](https://louislu010.github.io/physics-momentum-sim/)。
+
+## GitHub Pages 发布
+
+推送到 `main` 会通过 GitHub Actions 自动运行测试、构建并发布。Pages 的发布来源设置为 **GitHub Actions**。构建从 Pages 配置读取子路径，通过 `BASE_PATH` 传给 Vite；本地开发仍使用根路径。
+
+```sh
+BASE_PATH=/physics-momentum-sim/ npm run build
+BASE_PATH=/physics-momentum-sim/ npm run preview
+```
+
+线上与本地的浏览器保存空间不同，可通过场景 JSON 导出、导入迁移实验。
+
 ## 本地运行
 
 ```sh
