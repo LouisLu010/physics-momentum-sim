@@ -1,5 +1,6 @@
 import { arcBase, verticalTangentCenters } from './arcGeometry.js'
 import { endpointPosition, pruneJoints } from './connections.js'
+import { applyFixedRodPins } from './fixedRods.js'
 
 export const SCALE = 100
 export const SCENE_VERSION = 1
@@ -20,7 +21,7 @@ export function makeObject(type, x = 450, y = 280, id = crypto.randomUUID()) {
   const common = { id, type, name: LABELS[type] }
   if (type === 'arc') return { ...common, cx: x, cy: y, radius: 180, startAngle: 0, angle: 180, mass: 5, vx: 0, vy: 0, restitution: 0, fixed: false }
   if (type === 'ground') return { ...common, x: x - 200, y, width: 400 }
-  if (['rod', 'rope', 'spring'].includes(type)) return { ...common, ax: x - 75, ay: y, bx: x + 75, by: y, bodyA: '', bodyB: '', length: 150, stiffness: 40, damping: 0 }
+  if (['rod', 'rope', 'spring'].includes(type)) return { ...common, ax: x - 75, ay: y, bx: x + 75, by: y, bodyA: '', bodyB: '', length: 150, stiffness: 40, damping: 0, ...(type === 'rod' ? { fixed: false } : {}) }
   const body = { ...common, x, y, vx: 0, vy: 0, mass: 1, restitution: 1, fixed: false }
   if (type === 'joint') return { ...body, mass: 0.01, restitution: 0 }
   if (type === 'ball') return { ...body, radius: 19, rodId: '' }
@@ -42,7 +43,7 @@ export function createScene(preset = 'arc') {
     scene.gravity = false; scene.ground = false
     scene.objects = [block('block-a', 300, 330, { name: '滑块 A', mass: 1 }), block('block-b', 600, 330, { name: '滑块 B', mass: 2 }), connector('spring', 'spring-a', { bodyA: 'block-a', bodyB: 'block-b', length: 200, stiffness: 25, name: '弹簧 AB' })]
   } else if (preset === 'bead') {
-    scene.objects = [connector('rod', 'rod-a', { name: '固定斜杆', ax: 250, ay: 190, bx: 650, by: 420, length: Math.hypot(400, 230) }), ball('ball-a', 330, 236, { name: '套杆小球', rodId: 'rod-a' }), floor]
+    scene.objects = [connector('rod', 'rod-a', { name: '固定斜杆', fixed: true, ax: 250, ay: 190, bx: 650, by: 420, length: Math.hypot(400, 230) }), ball('ball-a', 330, 236, { name: '套杆小球', rodId: 'rod-a' }), floor]
   } else {
     const arc = { ...makeObject('arc', 365, 235, 'arc-a'), name: '弧形槽 A', radius: 225 }
     arc.cy += floor.y - arcBase(arc).bottom
@@ -92,6 +93,7 @@ export function parseScene(input) {
       base.damping = number(object.damping, 0, 0, 20)
       base.bodyA = typeof object.bodyA === 'string' ? object.bodyA : ''
       base.bodyB = typeof object.bodyB === 'string' ? object.bodyB : ''
+      if (object.type === 'rod') base.fixed = object.fixed === true
     }
     return base
   })
@@ -106,7 +108,7 @@ export function parseScene(input) {
       if (rod.bodyA === object.id || rod.bodyB === object.id) object.rodId = ''
     }
   }
-  return { version: SCENE_VERSION, name: typeof value.name === 'string' ? value.name.slice(0, 60) : '导入实验', objects: pruneJoints(objects), gravity: value.gravity === true, ground: value.ground === true, friction: value.friction === true, trails: value.trails === true, gravityValue: number(value.gravityValue, 9.8, 0, 30), frictionValue: number(value.frictionValue, 0.2, 0, 1) }
+  return { version: SCENE_VERSION, name: typeof value.name === 'string' ? value.name.slice(0, 60) : '导入实验', objects: applyFixedRodPins(pruneJoints(objects)), gravity: value.gravity === true, ground: value.ground === true, friction: value.friction === true, trails: value.trails === true, gravityValue: number(value.gravityValue, 9.8, 0, 30), frictionValue: number(value.frictionValue, 0.2, 0, 1) }
 }
 
 export function removeObject(scene, id) {

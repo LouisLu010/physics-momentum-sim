@@ -8,6 +8,7 @@ import { arcBase } from './arcGeometry.js'
 import { snapObject } from './snapping.js'
 import { connectEndpoint, moveJoint, pruneJoints } from './connections.js'
 import { hitConnectionTarget } from './canvasDrawing.js'
+import { applyFixedRodPins, setRodFixed } from './fixedRods.js'
 import { alignGuides, cloneScene, COLORS, createScene, LABELS, makeObject, parseScene, PRESETS, removeObject, STORAGE_KEY, TYPES } from './model.js'
 
 const HINTS = { arc: '平底槽 / 可滑动', block: '质量与初速度', ball: '自由运动 / 沿杆滑动', rod: '保持两端距离', rope: '绷紧时产生拉力', spring: '胡克定律', ground: '有限碰撞平面' }
@@ -45,7 +46,7 @@ function HelpDialog({ onClose }) {
   useEffect(() => { dialogRef.current.showModal() }, [])
   return <dialog ref={dialogRef} className="help-dialog" onCancel={onClose} onClick={event => { if (event.target === event.currentTarget) onClose() }}>
     <div className="dialog-heading"><h2>从一张草图开始</h2><button aria-label="关闭使用说明" className="icon-button" onClick={onClose}><Icon name="close" /></button></div>
-    <ol><li>拖入或点击添加元件。在画布上拖动，选中后在检查器中改参数。</li><li>杆、绳、弹簧的端点可接物体或另一连接件的 A/B 端。可在下拉框选择、画布点选，也可把端点拖到另一端点上松开。空端点固定在空间中。</li><li>连接件互接时会生成共用连接点，默认质量 0.01 kg，可选中调整；只有一条连接件使用时会自动恢复成固定锚点。</li><li>选中小球，在“杆上滑动”中选择杆，小球便成为可滑动的套环。</li><li>开启或关闭地面、重力与摩擦，设置初速度，然后点击运行。空格可暂停。</li><li>重置恢复到本次运行前的布局；修改参数会暂停模拟，并将当前位置作为新起点。</li></ol>
+    <ol><li>拖入或点击添加元件。在画布上拖动，选中后在检查器中改参数。</li><li>杆、绳、弹簧的端点可接物体或另一连接件的 A/B 端。可在下拉框选择、画布点选，也可把端点拖到另一端点上松开。空端点固定在空间中。</li><li>开启杆的“固定杆”，运行时杆的位置与方向保持不变，相连的端点成为固定支点。暂停编辑时仍可调整杆的位置。</li><li>连接件互接时会生成共用连接点，默认质量 0.01 kg，可选中调整；速度由运动和约束自动计算。只有一条连接件使用时会自动恢复成固定锚点。</li><li>选中小球，在“杆上滑动”中选择杆，小球便成为可滑动的套环；固定杆也允许小球沿杆滑动。</li><li>开启或关闭地面、重力与摩擦，设置初速度，然后点击运行。空格可暂停。</li><li>重置恢复到本次运行前的布局；修改参数会暂停模拟，并将当前位置作为新起点。</li></ol>
     <p>画布坐标向右、向下为正，100 px 对应 1 m。无外力时，系统总动量守恒；固定锚点、地面和固定槽可向系统施加外力。</p>
     <p>小球在槽上方时，靠近竖直切线会水平对齐并保持高度；靠近槽口则吸附到切点。槽底和滑块底面靠近地面会自动贴合。按住 Alt 可暂时关闭吸附或端点自动连接；地面吸附仅用于摆放，不会锁住运行中的物体。</p>
     <p className="model-note">二维教学模型：滑块与槽体不旋转，杆、绳、弹簧无质量。槽体可滑动或固定，动量读数包含槽体。滑块与弧槽接触使用支撑半径近似；数值积分存在小量误差。</p>
@@ -112,12 +113,15 @@ export default function App() {
     setSnapHint(null)
     const current = frameRef.current || designRef.current
     const result = typeof updater === 'function' ? updater(current) : updater
-    const next = { ...result, objects: alignGuides(result.objects) }
+    let next
+    try { next = { ...result, objects: alignGuides(applyFixedRodPins(result.objects)) } }
+    catch { setMessage('固定杆的连接位置冲突，请先解除一根杆的固定。'); return false }
     designRef.current = next
     frameRef.current = null
     timeRef.current = 0
     setDesign(next); setFrame(null); setSimTime(0)
     clearTrails()
+    return true
   }, [clearTrails])
 
   const reset = useCallback(() => {
@@ -198,6 +202,11 @@ export default function App() {
 
   const updateObject = changes => {
     if (!selected) return
+    if (selected.type === 'rod' && 'fixed' in changes) {
+      try { edit(current => ({ ...current, objects: setRodFixed(current.objects, selected.id, changes.fixed) })) }
+      catch { setMessage('固定杆的连接位置冲突，请先解除另一根杆的固定。') }
+      return
+    }
     if (IS_CONNECTOR(selected) && ('bodyA' in changes || 'bodyB' in changes)) {
       const end = 'bodyA' in changes ? 'a' : 'b'
       const value = changes[end === 'a' ? 'bodyA' : 'bodyB']
@@ -227,7 +236,7 @@ export default function App() {
       if (('bodyA' in changes || 'bodyB' in changes) && selected.type !== 'spring') updated.length = Math.max(5, Math.hypot(b.x - a.x, b.y - a.y))
       if (selected.type === 'rod' && 'length' in changes) {
         const angle = Math.atan2(b.y - a.y, b.x - a.x)
-        if (!updated.bodyB) { updated.bx = a.x + Math.cos(angle) * updated.length; updated.by = a.y + Math.sin(angle) * updated.length }
+        if (updated.fixed || !updated.bodyB) { updated.bx = a.x + Math.cos(angle) * updated.length; updated.by = a.y + Math.sin(angle) * updated.length }
         else if (!updated.bodyA) { updated.ax = b.x - Math.cos(angle) * updated.length; updated.ay = b.y - Math.sin(angle) * updated.length }
       } else if (selected.type === 'rod' && ['ax', 'ay', 'bx', 'by'].some(key => key in changes)) updated.length = Math.max(5, Math.hypot(b.x - a.x, b.y - a.y))
     }
@@ -253,7 +262,7 @@ export default function App() {
       return object
       })
       if (updated.type === 'joint' && ('x' in changes || 'y' in changes)) objects = moveJoint(objects, updated.id, updated)
-      if (updated.type === 'rod' && 'length' in changes) {
+      if (updated.type === 'rod' && !updated.fixed && 'length' in changes) {
         const aBody = objects.find(object => object.id === updated.bodyA)
         const bBody = objects.find(object => object.id === updated.bodyB)
         const { a, b } = endpoints(updated, objects)
@@ -293,6 +302,11 @@ export default function App() {
     edit(current => {
       const source = current.objects.find(object => object.id === id)
       const shared = current.objects.find(object => object.id === source?.[end === 'a' ? 'bodyA' : 'bodyB'])
+      if (source?.type === 'rod' && source.fixed) {
+        const updated = { ...source, [`${end}x`]: point.x, [`${end}y`]: point.y }
+        updated.length = Math.max(5, Math.hypot(updated.bx - updated.ax, updated.by - updated.ay))
+        return { ...current, objects: current.objects.map(object => object.id === id ? updated : object) }
+      }
       if (shared?.type === 'joint') return { ...current, objects: moveJoint(current.objects, shared.id, point) }
       return { ...current, objects: pruneJoints(current.objects.map(object => {
       if (object.id !== id) return object
@@ -305,10 +319,10 @@ export default function App() {
 
   const applyConnection = (sourceId, end, target) => {
     try {
-      edit(current => ({ ...current, objects: connectEndpoint(current.objects, sourceId, end, target) }))
-      setConnectionMode(null)
+      const changed = edit(current => ({ ...current, objects: connectEndpoint(current.objects, sourceId, end, target) }))
+      if (changed) setConnectionMode(null)
     } catch (error) {
-      const messages = { 'Same connection target': '这两个端点已经属于同一个连接位置，不能形成零长度连接。', 'Cyclic rod guide': '套在杆上的小球不能同时作为该杆的端点。', 'Scene capacity exceeded': '连接需要新增一个连接点，请先删除一个元件腾出空间。' }
+      const messages = { 'Same connection target': '这两个端点已经属于同一个连接位置，不能形成零长度连接。', 'Cyclic rod guide': '套在杆上的小球不能同时作为该杆的端点。', 'Scene capacity exceeded': '连接需要新增一个连接点，请先删除一个元件腾出空间。', 'Conflicting fixed anchors': '两根固定杆的端点位置不同，请先对齐或解除一根杆的固定。' }
       setMessage(messages[error.message] || '无法连接到该端点，请选择其他物体或连接件端点。')
     }
   }

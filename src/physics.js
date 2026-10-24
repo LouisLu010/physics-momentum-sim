@@ -19,11 +19,28 @@ const position = (object) => object.type === 'arc' ? { x: finite(object.cx), y: 
 const hasBase = (object) => Number.isFinite(object.mass) || typeof object.fixed === 'boolean'
 
 function pointFor(connector, side, byId) {
+  if (connector.type === 'rod' && connector.fixed === true) {
+    return { x: finite(connector[`${side}x`]), y: finite(connector[`${side}y`]) }
+  }
   const body = byId.get(connector[`body${side.toUpperCase()}`])
   if (body && body.id !== connector.id && (isBody(body) || body.type === 'arc')) {
     return position(body)
   }
   return { x: finite(connector[`${side}x`]), y: finite(connector[`${side}y`]) }
+}
+
+function fixedRodPins(objects, byId) {
+  const pins = new Map()
+  for (const rod of objects) {
+    if (rod.type !== 'rod' || rod.fixed !== true) continue
+    for (const side of ['a', 'b']) {
+      const id = rod[`body${side.toUpperCase()}`]
+      if (!isBody(byId.get(id)) || pins.has(id)) continue
+      // 冲突锚点由编辑层拒绝；无效外部数据按第一根固定杆确定性处理。
+      pins.set(id, { x: finite(rod[`${side}x`]), y: finite(rod[`${side}y`]) })
+    }
+  }
+  return pins
 }
 
 /** 解析连接元件的两端；未连接的端点作为世界坐标中的固定支点。 */
@@ -553,6 +570,18 @@ export function integrate(objects = [], environment = {}, dt = 0) {
   const next = objects.map((object) => ({ ...object }))
   if (!Number.isFinite(dt) || dt <= 0) return next
   const byId = new Map(next.map((object) => [object.id, object]))
+  const pins = fixedRodPins(next, byId)
+  const originalFixed = new Map()
+  for (const [id, point] of pins) {
+    const body = byId.get(id)
+    originalFixed.set(id, { present: Object.hasOwn(body, 'fixed'), value: body.fixed })
+    if (body.type === 'arc') { body.cx = point.x; body.cy = point.y }
+    else { body.x = point.x; body.y = point.y }
+    // 固定杆提供外部支撑，但不覆盖用户设置的物体固定状态。
+    body.fixed = true
+    body.vx = 0
+    body.vy = 0
+  }
   const bodies = next.filter(isBody)
   const solids = bodies.filter(object => object.type === 'ball' || object.type === 'block')
   const connectors = next.filter((object) => ['rod', 'rope', 'spring'].includes(object.type))
@@ -633,6 +662,11 @@ export function integrate(objects = [], environment = {}, dt = 0) {
     }
     remaining -= step
   }
+  for (const [id, original] of originalFixed) {
+    const body = byId.get(id)
+    if (original.present) body.fixed = original.value
+    else delete body.fixed
+  }
   return next
 }
 
@@ -642,10 +676,11 @@ export function measure(objects = []) {
   let py = 0
   let kineticEnergy = 0
   let totalMass = 0
+  const pins = fixedRodPins(objects, new Map(objects.map(object => [object.id, object])))
   for (const body of objects) {
     if (!isBody(body)) continue
     const bodyMass = mass(body)
-    const { x, y } = velocity(body)
+    const { x, y } = pins.has(body.id) ? { x: 0, y: 0 } : velocity(body)
     const vx = x / SCALE
     const vy = y / SCALE
     px += bodyMass * vx

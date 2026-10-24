@@ -41,7 +41,9 @@ function GeometryFields({ selected, onUpdateObject }) {
   return (
     <>
       {dimension('length', lengthLabel, 0.05, 20)}
-      {selected.type === 'rod' && !selected.bodyA && !selected.bodyB && (
+      {selected.type === 'rod' && <Toggle label="固定杆" detail="运行时保持位置和方向" checked={selected.fixed} onChange={(fixed) => onUpdateObject({ fixed })} />}
+      {selected.type === 'rod' && selected.fixed && <p className="property-help">相连端点作为固定支点，杆上的小球仍可沿杆滑动。</p>}
+      {selected.type === 'rod' && (selected.fixed || (!selected.bodyA && !selected.bodyB)) && (
         <NumberField label="杆倾角" value={Math.atan2(selected.by - selected.ay, selected.bx - selected.ax) * 180 / Math.PI} suffix="°" min={-180} max={180} step={5} onChange={(degrees) => {
           const angle = degrees * Math.PI / 180
           onUpdateObject({ bx: selected.ax + selected.length * Math.cos(angle), by: selected.ay + selected.length * Math.sin(angle) })
@@ -59,16 +61,18 @@ function GeometryFields({ selected, onUpdateObject }) {
 
 function BodyFields({ selected, objects, onUpdateObject }) {
   const rods = objects.filter((object) => object.type === 'rod' && object.bodyA !== selected.id && object.bodyB !== selected.id)
+  const pinnedByRod = selected.type === 'joint' && objects.some(object => object.type === 'rod' && object.fixed && (object.bodyA === selected.id || object.bodyB === selected.id))
   return (
     <section className="property-section" aria-label="运动参数">
       <span className="section-label">运动参数</span>
       <NumberField label="质量" value={selected.mass} suffix="kg" min={selected.type === 'joint' ? 0.001 : 0.05} max={1000} step={selected.type === 'joint' ? 0.001 : 0.1} onChange={(mass) => onUpdateObject({ mass })} />
-      <NumberField label="水平速度" value={(selected.vx || 0) / PIXELS_PER_METER} suffix="m/s" min={-50} max={50} step={0.1} onChange={(value) => onUpdateObject({ vx: value * PIXELS_PER_METER })} />
-      <NumberField label="竖直速度" value={(selected.vy || 0) / PIXELS_PER_METER} suffix="m/s" min={-50} max={50} step={0.1} onChange={(value) => onUpdateObject({ vy: value * PIXELS_PER_METER })} />
+      {selected.type !== 'joint' && <NumberField label="水平速度" value={(selected.vx || 0) / PIXELS_PER_METER} suffix="m/s" min={-50} max={50} step={0.1} onChange={(value) => onUpdateObject({ vx: value * PIXELS_PER_METER })} />}
+      {selected.type !== 'joint' && <NumberField label="竖直速度" value={(selected.vy || 0) / PIXELS_PER_METER} suffix="m/s" min={-50} max={50} step={0.1} onChange={(value) => onUpdateObject({ vy: value * PIXELS_PER_METER })} />}
       {selected.type !== 'joint' && <NumberField label="恢复系数" value={selected.restitution ?? 0.8} min={0} max={1} step={0.05} onChange={(restitution) => onUpdateObject({ restitution })} />}
       <Toggle checked={selected.fixed} onChange={(fixed) => onUpdateObject({ fixed, ...(fixed ? { vx: 0, vy: 0 } : {}) })} label="固定物体" detail="固定时不受力移动" />
       {selected.type === 'arc' && <p className="property-help">槽体可在平底上滑动；开启固定后作为静止轨道。</p>}
-      {selected.type === 'joint' && <p className="property-help">连接点将相连端点保持在一起，质量计入总动量；它本身不参与碰撞。</p>}
+      {selected.type === 'joint' && <p className="property-help">连接点的速度由相连物体和约束自动计算，无需单独设置。质量计入总动量，连接点本身不参与碰撞。</p>}
+      {pinnedByRod && <p className="property-help">连接到固定杆，运行时保持静止。</p>}
       {selected.type === 'ball' && (
         <>
           <SelectField label="杆上滑动" value={selected.rodId} onChange={(rodId) => onUpdateObject({ rodId })}>
@@ -107,7 +111,7 @@ function EndpointFields({ end, selected, objects, onUpdateObject, onStartConnect
         {targets.map((target) => <option key={target.id} value={target.id}>{target.name}</option>)}
         {endpointTargets.length > 0 && <optgroup label="连接件端点">{endpointTargets.map(target => <option key={target.value} value={target.value}>{target.label}</option>)}</optgroup>}
       </SelectField>
-      {!selected[bodyKey] && <PositionFields object={selected} xKey={`${end}x`} yKey={`${end}y`} prefix={`${endLabel} `} onChange={onUpdateObject} />}
+      {(selected.fixed || !selected[bodyKey]) && <PositionFields object={selected} xKey={`${end}x`} yKey={`${end}y`} prefix={`${endLabel} `} onChange={onUpdateObject} />}
       <button type="button" className={`connect-inline${picking ? ' active' : ''}`} onClick={() => onStartConnection(end)} aria-pressed={picking}>
         <Icon name="link" size={14} />
         {picking ? `请点选端点 ${endLabel} 的连接目标` : `在画布连接端点 ${endLabel}`}

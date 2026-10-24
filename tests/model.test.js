@@ -238,6 +238,26 @@ test('old trough scenes acquire motion properties and explicit fixed state is re
   assert.equal(imported.cy, legacy.cy)
 })
 
+test('fixed rod imports retain world endpoints and synchronize linked bodies without changing their fixed flag', () => {
+  const block = { ...makeObject('block', 600, 400, 'body'), vx: 120, vy: 70 }
+  const rod = { ...makeObject('rod', 300, 200, 'rod'), fixed: true, bodyB: block.id }
+  const parsed = parseScene(pack([block, rod]))
+  assert.equal(parsed.objects[1].fixed, true)
+  assert.equal(parsed.objects[0].fixed, false)
+  assert.deepEqual([parsed.objects[0].x, parsed.objects[0].y, parsed.objects[0].vx, parsed.objects[0].vy], [rod.bx, rod.by, 0, 0])
+  assert.deepEqual(parseScene(JSON.stringify(parsed)), parsed)
+  const legacy = { ...rod }
+  delete legacy.fixed
+  assert.equal(parseScene(pack([block, legacy])).objects[1].fixed, false)
+})
+
+test('import rejects one shared body pinned to conflicting fixed rod anchors', () => {
+  const block = makeObject('block', 600, 400, 'body')
+  const rod = { ...makeObject('rod', 300, 200, 'rod'), fixed: true, bodyB: block.id }
+  const other = { ...makeObject('rod', 700, 200, 'other'), fixed: true, bodyA: block.id }
+  assert.throws(() => parseScene(pack([block, rod, other])), /Conflicting fixed anchors/)
+})
+
 test('trough endpoints survive import and deletion preserves the current center', () => {
   const arc = makeObject('arc', 120, 80, 'arc')
   const rod = { ...makeObject('rod', 300, 300, 'rod'), bodyA: arc.id }

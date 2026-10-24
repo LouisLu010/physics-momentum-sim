@@ -1,12 +1,16 @@
+import { applyFixedRodPins, fixedRodPins } from './fixedRods.js'
+
 export const CONNECTOR_TYPES = ['rod', 'rope', 'spring']
 export const ATTACHABLE_TYPES = ['ball', 'block', 'arc', 'joint']
 
 export function endpointPosition(connector, end, objects) {
+  if (connector.type === 'rod' && connector.fixed) return { x: connector[`${end}x`], y: connector[`${end}y`] }
   const body = objects.find(object => object.id === connector[end === 'a' ? 'bodyA' : 'bodyB'] && ATTACHABLE_TYPES.includes(object.type))
   return body ? { x: body.cx ?? body.x, y: body.cy ?? body.y } : { x: connector[`${end}x`], y: connector[`${end}y`] }
 }
 
 export function pruneJoints(objects) {
+  const pins = fixedRodPins(objects)
   const detached = new Map(objects.filter(object => object.type === 'joint' && objects.filter(candidate => CONNECTOR_TYPES.includes(candidate.type) && (candidate.bodyA === object.id || candidate.bodyB === object.id)).length < 2).map(object => [object.id, object]))
   if (!detached.size) return objects
   return objects.filter(object => !detached.has(object.id)).map(object => {
@@ -15,7 +19,10 @@ export function pruneJoints(objects) {
     for (const end of ['a', 'b']) {
       const key = end === 'a' ? 'bodyA' : 'bodyB'
       const joint = detached.get(object[key])
-      if (joint) { next[key] = ''; next[`${end}x`] = joint.x; next[`${end}y`] = joint.y }
+      if (joint) {
+        const point = pins.get(joint.id) || joint
+        next[key] = ''; next[`${end}x`] = point.x; next[`${end}y`] = point.y
+      }
     }
     return next
   })
@@ -79,13 +86,18 @@ export function connectEndpoint(objects, sourceId, end, target) {
     changed.add(other.id)
   }
   validConnections(next)
+  const pinnedIds = new Set(fixedRodPins(next).keys())
+  for (const object of next) if (CONNECTOR_TYPES.includes(object.type) && (pinnedIds.has(object.bodyA) || pinnedIds.has(object.bodyB))) changed.add(object.id)
+  next = applyFixedRodPins(next)
   next = pruneJoints(next)
   if (next.length > 60) throw new Error('Scene capacity exceeded')
   return resizeConstraints(next, changed)
 }
 
 export function moveJoint(objects, id, point) {
-  const next = objects.map(object => object.id === id && object.type === 'joint' ? { ...object, x: point.x, y: point.y, vx: 0, vy: 0 } : object)
+  const pins = fixedRodPins(objects)
+  const destination = pins.get(id) || point
+  const next = applyFixedRodPins(objects.map(object => object.id === id && object.type === 'joint' ? { ...object, x: destination.x, y: destination.y, vx: 0, vy: 0 } : object))
   const changed = new Set(next.filter(object => CONNECTOR_TYPES.includes(object.type) && (object.bodyA === id || object.bodyB === id)).map(object => object.id))
   return resizeConstraints(next, changed)
 }

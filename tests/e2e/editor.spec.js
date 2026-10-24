@@ -673,6 +673,8 @@ test('杆与绳的下拉连接生成共同节点，连接点质量可编辑且�
   await expect(numberField(page, '质量')).toHaveValue('0.01')
   await expect(numberField(page, '恢复系数')).toHaveCount(0)
   await expect(numberField(page, '半径')).toHaveCount(0)
+  await expect(numberField(page, '水平速度')).toHaveCount(0)
+  await expect(numberField(page, '竖直速度')).toHaveCount(0)
   await editNumber(page, '质量', 0.02)
   await expect(numberField(page, '质量')).toHaveValue('0.02')
   await page.getByRole('button', { name: '添加弹簧', exact: true }).click()
@@ -750,4 +752,103 @@ test('杆绳链运行保持衔接，保存导入可恢复并在删除时清理�
   expect(remainingRope.ax).toBeCloseTo(joint.x, 3)
   expect(remainingRope.ay).toBeCloseTo(joint.y, 3)
   expect(remainingRope.bodyB).toBe('joined-ball')
+})
+
+async function advanceSimulation(page, seconds) {
+  const target = await simulationTime(page) + seconds
+  await page.getByRole('button', { name: '运行模拟', exact: true }).click()
+  await page.waitForFunction(targetTime => {
+    const time = Number(document.querySelector('.time-readout').textContent.match(/[\d.]+/)[0])
+    if (time < targetTime) return false
+    document.querySelector('button[aria-label="暂停模拟"]')?.click()
+    return true
+  }, target)
+  await expect(page.getByRole('button', { name: '运行模拟', exact: true })).toBeVisible()
+}
+
+async function inspectorPosition(page, name) {
+  await page.locator('.scene-item').filter({ hasText: name }).click()
+  return {
+    x: Number(await numberField(page, '位置 X').inputValue()) * 100,
+    y: Number(await numberField(page, '位置 Y').inputValue()) * 100,
+  }
+}
+
+test('固定杆保持共享端点静止，解除固定后连接点可随机构运动', async ({ page }) => {
+  await loadConnectorScene(page)
+  const { joint } = await connectRodToRope(page)
+  const fixedToggle = page.getByRole('checkbox', { name: /^固定杆/ })
+  await expect(fixedToggle).not.toBeChecked()
+  await fixedToggle.check()
+  const fixedScene = await exportScene(page)
+  const fixedRod = fixedScene.objects.find(object => object.id === 'joined-rod')
+  expect(fixedRod.fixed).toBe(true)
+  expect(fixedRod.bx).toBe(joint.x)
+  expect(fixedRod.by).toBe(joint.y)
+  expect(fixedScene.objects.find(object => object.id === joint.id).fixed).toBe(false)
+
+  await advanceSimulation(page, 0.35)
+  const pinned = await inspectorPosition(page, joint.name)
+  expect(pinned.x).toBeCloseTo(joint.x, 2)
+  expect(pinned.y).toBeCloseTo(joint.y, 2)
+  await expect(numberField(page, '水平速度')).toHaveCount(0)
+  await expect(numberField(page, '竖直速度')).toHaveCount(0)
+  await expect(page.getByText('连接到固定杆，运行时保持静止。')).toBeVisible()
+  const movingBall = await inspectorPosition(page, '连接测试球')
+  expect(Math.hypot(movingBall.x - 610, movingBall.y - 360)).toBeGreaterThan(1)
+  await expect(numberField(page, '水平速度')).toHaveCount(1)
+
+  await page.locator('.scene-item').filter({ hasText: '连接测试杆' }).click()
+  await fixedToggle.uncheck()
+  await advanceSimulation(page, 0.35)
+  const released = await inspectorPosition(page, joint.name)
+  expect(Math.hypot(released.x - pinned.x, released.y - pinned.y)).toBeGreaterThan(1)
+  await expect(page.getByText('连接到固定杆，运行时保持静止。')).toHaveCount(0)
+  expect((await exportScene(page)).objects.find(object => object.id === joint.id).fixed).toBe(false)
+})
+
+test('固定杆的锚点可编辑并保存恢复，连接点不提供独立速度设置', async ({ page }) => {
+  await loadConnectorScene(page)
+  const { joint } = await connectRodToRope(page)
+  await page.getByRole('checkbox', { name: /^固定杆/ }).check()
+  await expect(numberField(page, '杆倾角')).toBeVisible()
+  await editNumber(page, 'B 位置 Y', 2.8)
+  const saved = await exportScene(page)
+  const rod = saved.objects.find(object => object.id === 'joined-rod')
+  const node = saved.objects.find(object => object.id === joint.id)
+  expect(rod.by).toBe(280)
+  expect(node.y).toBe(280)
+  expect(rod.bodyB).toBe(joint.id)
+  await expect(page.getByText('已保存到本机', { exact: true })).toBeVisible()
+  await page.reload()
+  await expect(page.getByRole('checkbox', { name: /^固定杆/ })).toBeChecked()
+  await expect(numberField(page, 'B 位置 Y')).toHaveValue('2.8')
+  expect(await exportScene(page)).toEqual(saved)
+  await page.getByRole('button', { name: '清空', exact: true }).click()
+  await loadConnectorScene(page, saved)
+  await expect(page.getByRole('checkbox', { name: /^固定杆/ })).toBeChecked()
+  expect(await exportScene(page)).toEqual(saved)
+  await page.locator('.scene-item').filter({ hasText: joint.name }).click()
+  await expect(numberField(page, '水平速度')).toHaveCount(0)
+  await expect(numberField(page, '竖直速度')).toHaveCount(0)
+  await expect(page.getByText(/连接点的速度由相连物体和约束自动计算/)).toBeVisible()
+})
+
+test('固定杆仍允许套在杆上的小球沿杆滑动', async ({ page }) => {
+  await preset(page, 'bead')
+  await page.getByRole('checkbox', { name: /^固定杆/ }).check()
+  const before = await exportScene(page)
+  const rod = before.objects.find(object => object.id === 'rod-a')
+  const initial = before.objects.find(object => object.id === 'ball-a')
+  await advanceSimulation(page, 0.4)
+  const ball = await inspectorPosition(page, '套杆小球')
+  const dx = rod.bx - rod.ax
+  const dy = rod.by - rod.ay
+  expect(Math.abs((ball.x - rod.ax) * dy - (ball.y - rod.ay) * dx) / Math.hypot(dx, dy)).toBeLessThan(0.2)
+  expect(ball.x).toBeGreaterThan(initial.x + 5)
+  expect(ball.y).toBeGreaterThan(initial.y + 5)
+  await expect(page.getByRole('combobox', { name: '杆上滑动', exact: true })).toHaveValue(rod.id)
+  await page.locator('.scene-item').filter({ hasText: '固定斜杆' }).click()
+  await expect(page.getByRole('checkbox', { name: /^固定杆/ })).toBeChecked()
+  expect((await exportScene(page)).objects.find(object => object.id === rod.id)).toEqual(rod)
 })

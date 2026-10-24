@@ -1,16 +1,12 @@
 import { COLORS } from './model.js'
 import { angleOnArc, arcBase, ARC_WALL_HALF } from './arcGeometry.js'
+import { endpointPosition } from './connections.js'
 export const WORLD_SIZE = { width: 900, height: 620 }
 const CONNECTOR_TYPES = new Set(['rod', 'rope', 'spring'])
 const BODY_TYPES = new Set(['ball', 'block', 'arc', 'joint'])
 
 export function connectorEndpoints(object, objects) {
-  const first = objects.find((candidate) => candidate.id === object.bodyA)
-  const second = objects.find((candidate) => candidate.id === object.bodyB)
-  return {
-    a: first ? { x: first.cx ?? first.x, y: first.cy ?? first.y } : { x: object.ax, y: object.ay },
-    b: second ? { x: second.cx ?? second.x, y: second.cy ?? second.y } : { x: object.bx, y: object.by },
-  }
+  return { a: endpointPosition(object, 'a', objects), b: endpointPosition(object, 'b', objects) }
 }
 
 function distanceToSegment(point, first, second) {
@@ -319,14 +315,14 @@ function drawConnector(context, object, objects, selected, scale, connectionMode
   }
   context.lineWidth = 1.7 / scale
   const availableTarget = connectionMode && connectionMode.id !== object.id
-  drawAnchor(context, a, !object.bodyA, selected || availableTarget, scale)
-  drawAnchor(context, b, !object.bodyB, selected || availableTarget, scale)
+  drawAnchor(context, a, object.fixed || !object.bodyA, selected || availableTarget, scale)
+  drawAnchor(context, b, object.fixed || !object.bodyB, selected || availableTarget, scale)
   if (selected || availableTarget) {
     label(context, 'A', a.x, a.y - 17 / scale, scale, COLORS[object.type])
     label(context, 'B', b.x, b.y - 17 / scale, scale, COLORS[object.type])
   }
   if (selected) {
-    label(context, `${(length / 100).toFixed(2)} m`, (a.x + b.x) / 2, (a.y + b.y) / 2 - 18 / scale, scale, COLORS[object.type])
+    label(context, `${(length / 100).toFixed(2)} m${object.fixed ? ' · 固定' : ''}`, (a.x + b.x) / 2, (a.y + b.y) / 2 - 18 / scale, scale, COLORS[object.type])
   }
   if (connectionMode?.id === object.id) {
     const endpoint = connectionMode.end === 'a' ? a : b
