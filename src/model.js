@@ -24,7 +24,7 @@ export function makeObject(type, x = 450, y = 280, id = crypto.randomUUID()) {
 }
 
 export function createScene(preset = 'arc') {
-  const scene = { version: SCENE_VERSION, name: PRESETS.find(item => item.id === preset)?.name || '自由实验', gravity: true, gravityValue: 9.8, ground: true, friction: false, frictionValue: 0.2, objects: [] }
+  const scene = { version: SCENE_VERSION, name: PRESETS.find(item => item.id === preset)?.name || '自由实验', gravity: true, gravityValue: 9.8, ground: true, friction: false, frictionValue: 0.2, trails: false, objects: [] }
   const ball = (id, x, y, extra = {}) => ({ ...makeObject('ball', x, y, id), ...extra })
   const block = (id, x, y, extra = {}) => ({ ...makeObject('block', x, y, id), ...extra })
   const connector = (type, id, extra) => ({ ...makeObject(type, 450, 300, id), ...extra })
@@ -98,7 +98,7 @@ export function parseScene(input) {
       if (rod.bodyA === object.id || rod.bodyB === object.id) object.rodId = ''
     }
   }
-  return { version: SCENE_VERSION, name: typeof value.name === 'string' ? value.name.slice(0, 60) : '导入实验', objects, gravity: value.gravity === true, ground: value.ground === true, friction: value.friction === true, gravityValue: number(value.gravityValue, 9.8, 0, 30), frictionValue: number(value.frictionValue, 0.2, 0, 1) }
+  return { version: SCENE_VERSION, name: typeof value.name === 'string' ? value.name.slice(0, 60) : '导入实验', objects, gravity: value.gravity === true, ground: value.ground === true, friction: value.friction === true, trails: value.trails === true, gravityValue: number(value.gravityValue, 9.8, 0, 30), frictionValue: number(value.frictionValue, 0.2, 0, 1) }
 }
 
 export function removeObject(scene, id) {

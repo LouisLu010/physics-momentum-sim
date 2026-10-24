@@ -3,6 +3,7 @@ import SimulationCanvas from './SimulationCanvas.jsx'
 import Inspector from './Inspector.jsx'
 import { Icon } from './ui.jsx'
 import { integrate, endpoints, measure } from './physics.js'
+import { recordTrails, TRAIL_INTERVAL } from './trails.js'
 import { alignGuides, cloneScene, COLORS, createScene, LABELS, makeObject, parseScene, PRESETS, removeObject, STORAGE_KEY, TYPES } from './model.js'
 
 const HINTS = { arc: '半径 / 圆心角', block: '质量与初速度', ball: '自由运动 / 沿杆滑动', rod: '保持两端距离', rope: '绷紧时产生拉力', spring: '胡克定律', ground: '有限碰撞平面' }
@@ -56,6 +57,9 @@ export default function App() {
   const [running, setRunning] = useState(false)
   const [simTime, setSimTime] = useState(0)
   const timeRef = useRef(0)
+  const [trails, setTrails] = useState({})
+  const trailsRef = useRef({})
+  const lastSampleRef = useRef(0)
   const [speed, setSpeed] = useState(1)
   const [selectedId, setSelectedId] = useState(design.objects[0]?.id || null)
   const [connectionMode, setConnectionMode] = useState(null)
@@ -66,6 +70,21 @@ export default function App() {
   const scene = frame || design
   const selected = scene.objects.find(object => object.id === selectedId)
   const metrics = measure(scene.objects)
+  const trailCount = Object.values(trails).reduce((sum, points) => sum + points.length, 0)
+
+  const clearTrails = useCallback(() => {
+    trailsRef.current = {}
+    lastSampleRef.current = timeRef.current
+    setTrails({})
+  }, [])
+
+  const sampleTrails = useCallback((current, force = false) => {
+    if (!current.trails || (!force && timeRef.current - lastSampleRef.current < TRAIL_INTERVAL)) return
+    const next = recordTrails(trailsRef.current, current.objects)
+    trailsRef.current = next
+    lastSampleRef.current = timeRef.current
+    setTrails(next)
+  }, [])
 
   useEffect(() => {
     setSaveState('正在保存')
@@ -91,12 +110,14 @@ export default function App() {
     frameRef.current = null
     timeRef.current = 0
     setDesign(next); setFrame(null); setSimTime(0)
-  }, [])
+    clearTrails()
+  }, [clearTrails])
 
   const reset = useCallback(() => {
     setRunning(false); setFrame(null); setSimTime(0); setConnectionMode(null)
     frameRef.current = null; timeRef.current = 0
-  }, [])
+    clearTrails()
+  }, [clearTrails])
 
   const toggleRunning = useCallback(() => { setConnectionMode(null); setRunning(value => !value) }, [])
   const deleteSelected = useCallback(() => {
@@ -128,10 +149,12 @@ export default function App() {
       if (last !== null) {
         accumulator += Math.min((now - last) / 1000, 0.05) * speed
         let current = frameRef.current || cloneScene(designRef.current)
+        if (current.trails && Object.keys(trailsRef.current).length === 0) sampleTrails(current, true)
         while (accumulator >= FIXED_DT) {
           current = { ...current, objects: integrate(current.objects, current, FIXED_DT) }
           accumulator -= FIXED_DT
           timeRef.current += FIXED_DT
+          sampleTrails(current)
         }
         const invalid = current.objects.some(object => (IS_BODY(object) && [object.x, object.y, object.vx, object.vy].some(value => !Number.isFinite(value))))
         if (invalid) { setRunning(false); setMessage('当前组合计算不稳定，已暂停。请减小初速度或弹簧劲度。'); return }
@@ -143,13 +166,15 @@ export default function App() {
     }
     request = requestAnimationFrame(animate)
     return () => cancelAnimationFrame(request)
-  }, [running, speed])
+  }, [running, speed, sampleTrails])
 
   const step = () => {
     setRunning(false)
     const current = frameRef.current || cloneScene(designRef.current)
+    if (current.trails && Object.keys(trailsRef.current).length === 0) sampleTrails(current, true)
     const next = { ...current, objects: integrate(current.objects, current, 1 / 60) }
     frameRef.current = next; timeRef.current += 1 / 60
+    sampleTrails(next, true)
     setFrame(next); setSimTime(timeRef.current)
   }
 
@@ -240,7 +265,20 @@ export default function App() {
     const next = createScene(value)
     edit(next); setSelectedId(next.objects[0]?.id || null); setConnectionMode(null)
   }
-  const updateEnvironment = changes => edit(current => {
+  const updateEnvironment = changes => {
+    // 轨迹属于显示设置；运行中切换时保留时间、速度与初始布局。
+    if ('trails' in changes) {
+      const nextDesign = { ...designRef.current, trails: changes.trails }
+      designRef.current = nextDesign
+      setDesign(nextDesign)
+      if (frameRef.current) {
+        frameRef.current = { ...frameRef.current, trails: changes.trails }
+        setFrame(frameRef.current)
+      }
+      clearTrails()
+      return
+    }
+    edit(current => {
     const next = { ...current, ...changes }
     if (changes.ground && !current.objects.some(object => object.type === 'ground')) {
       if (current.objects.length >= 60) { setMessage('元件已达上限，请先删除一个元件再开启地面。'); return current }
@@ -248,7 +286,8 @@ export default function App() {
       next.objects = [...current.objects, floor]
     }
     return next
-  })
+    })
+  }
   const exportScene = () => {
     const url = URL.createObjectURL(new Blob([JSON.stringify(designRef.current, null, 2)], { type: 'application/json' }))
     const link = document.createElement('a'); link.href = url; link.download = 'momentum-scene.json'; link.click()
@@ -281,7 +320,7 @@ export default function App() {
       <section className="stage" aria-label="模拟实验">
         <div className="stage-toolbar"><div className="stage-title"><h1>把物理，画出来。</h1><p>搭建一个场景，观察每一次动量传递。</p></div><label className="preset-picker"><span>实验示例</span><select aria-label="加载实验示例" value="" onChange={event => changePreset(event.target.value)}><option value="" disabled>选择示例</option>{PRESETS.map(preset => <option value={preset.id} key={preset.id}>{preset.name}</option>)}</select></label></div>
         <div className="simulation-toolbar"><div className="playback-actions"><button className={`button ${running ? 'button-soft' : 'button-primary'}`} aria-label={running ? '暂停模拟' : '运行模拟'} onClick={toggleRunning}><Icon name={running ? 'pause' : 'play'} size={14} />{running ? '暂停' : '运行'}</button><button className="icon-button" aria-label="重置模拟" title="恢复运行前的布局" onClick={reset}><Icon name="reset" size={17} /></button><button className="icon-button" aria-label="单步前进" title="前进 1/60 秒" onClick={step}><Icon name="step" size={16} /></button><select className="speed-picker" aria-label="模拟速度" value={speed} onChange={event => setSpeed(Number(event.target.value))}><option value={0.25}>0.25×</option><option value={0.5}>0.5×</option><option value={1}>1×</option><option value={2}>2×</option></select></div><div className="stage-meta"><span className={`live-pill ${running ? 'live' : ''}`}><span />{running ? '运行中' : '已暂停'}</span><output className="time-readout" aria-label="模拟时间">t = {simTime.toFixed(2)} s</output><button className="clear-button" onClick={() => { edit(current => ({ ...current, ground: false, objects: [], name: '自由实验' })); select(null) }}>清空</button></div></div>
-        <div className="canvas-wrap"><SimulationCanvas objects={scene.objects} groundEnabled={scene.ground} selectedId={selectedId} onSelect={select} onMove={moveObject} onDropTool={addObject} connectionMode={connectionMode} onConnectionPick={pickConnection} onCancelConnection={() => setConnectionMode(null)} onEndpointMove={moveEndpoint} /></div>
+        <div className="canvas-wrap"><SimulationCanvas objects={scene.objects} groundEnabled={scene.ground} selectedId={selectedId} onSelect={select} onMove={moveObject} onDropTool={addObject} connectionMode={connectionMode} onConnectionPick={pickConnection} onCancelConnection={() => setConnectionMode(null)} onEndpointMove={moveEndpoint} trails={trails} />{scene.trails && <span className="trail-status">轨迹 · {trailCount} 个采样点</span>}</div>
         <div className="measurement-strip" aria-label="实时测量"><div><span>水平总动量 <i>pₓ</i></span><output data-testid="momentum-x">{metrics.px.toFixed(3)} <small>kg·m/s</small></output></div><div><span>竖直总动量 <i>pᵧ</i></span><output data-testid="momentum-y">{metrics.py.toFixed(3)} <small>kg·m/s</small></output></div><div><span>总动能 <i>Eₖ</i></span><output data-testid="kinetic-energy">{metrics.kineticEnergy.toFixed(3)} <small>J</small></output></div></div>
         <div className="stage-footer"><span>100 px = 1 m · 右 / 下为正</span><span className="footer-spacer" /><span className="shortcut-key">空格</span><span>运行 / 暂停</span></div>
       </section>

@@ -3,6 +3,7 @@ import { connectorEndpoints, drawScene, hitObject, viewTransform, WORLD_SIZE } f
 
 const INITIAL_VIEW = { zoom: 1, x: 0, y: 0 }
 const CONNECTOR_TYPES = ['rod', 'rope', 'spring']
+const EMPTY_TRAILS = Object.freeze({})
 
 function ViewIcon({ type }) {
   return <svg viewBox="0 0 20 20" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -10,7 +11,7 @@ function ViewIcon({ type }) {
   </svg>
 }
 
-export default function SimulationCanvas({ objects, groundEnabled, selectedId, onSelect, onMove, onDropTool, connectionMode, onConnectionPick, onCancelConnection, onEndpointMove }) {
+export default function SimulationCanvas({ objects, groundEnabled, selectedId, onSelect, onMove, onDropTool, connectionMode, onConnectionPick, onCancelConnection, onEndpointMove, trails = EMPTY_TRAILS }) {
   const containerRef = useRef(null)
   const canvasRef = useRef(null)
   const dragRef = useRef(null)
@@ -54,8 +55,8 @@ export default function SimulationCanvas({ objects, groundEnabled, selectedId, o
   }, [])
 
   useEffect(() => {
-    drawScene(canvasRef.current, { size, view, objects, groundEnabled, selectedId, connectionMode })
-  }, [size, view, objects, groundEnabled, selectedId, connectionMode])
+    drawScene(canvasRef.current, { size, view, objects, groundEnabled, selectedId, connectionMode, trails })
+  }, [size, view, objects, groundEnabled, selectedId, connectionMode, trails])
 
   const localPoint = useCallback((event) => {
     const rect = canvasRef.current.getBoundingClientRect()

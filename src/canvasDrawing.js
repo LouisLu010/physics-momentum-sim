@@ -284,7 +284,32 @@ function drawBody(context, object, selected, scale, compact) {
   }
 }
 
-export function drawScene(canvas, { size, view, objects, groundEnabled, selectedId, connectionMode }) {
+function drawTrails(context, objects, trails, scale) {
+  for (const object of objects) {
+    if (object.type !== 'ball' && object.type !== 'block') continue
+    const points = trails[object.id]
+    if (!Array.isArray(points) || points.length < 2) continue
+    context.save()
+    context.strokeStyle = COLORS[object.type]
+    context.lineWidth = 1.5 / scale
+    context.globalAlpha = 0.6
+    context.beginPath()
+    let started = false
+    for (const point of points) {
+      if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) {
+        started = false
+        continue
+      }
+      if (started) context.lineTo(point.x, point.y)
+      else context.moveTo(point.x, point.y)
+      started = true
+    }
+    context.stroke()
+    context.restore()
+  }
+}
+
+export function drawScene(canvas, { size, view, objects, groundEnabled, selectedId, connectionMode, trails = {} }) {
   const context = canvas.getContext('2d')
   if (!context || size.width <= 0 || size.height <= 0) return
   const dpr = canvas.width / size.width
@@ -298,6 +323,7 @@ export function drawScene(canvas, { size, view, objects, groundEnabled, selected
   context.lineCap = 'round'
   context.lineJoin = 'round'
   drawGrid(context, size, transform)
+  drawTrails(context, objects, trails, transform.scale)
   for (const object of objects) {
     const selected = selectedId === object.id
     context.save()

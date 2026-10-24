@@ -276,3 +276,57 @@ test('删除物体或导轨后连接引用会被安全清理', async ({ page }) 
   expect(scene.objects.some(object => object.type === 'rod')).toBe(false)
   expect(scene.objects.find(object => object.type === 'ball').rodId).toBe('')
 })
+
+async function trailSamples(page) {
+  const status = await page.locator('.trail-status').textContent()
+  return Number(status.match(/\d+/)[0])
+}
+
+async function simulationTime(page) {
+  return Number((await page.getByLabel('模拟时间').textContent()).match(/[\d.]+/)[0])
+}
+
+test('运行中可开关轨迹，路径真实累积且不暂停或重置时间', async ({ page }) => {
+  await preset(page, 'collision')
+  const trails = page.getByRole('checkbox', { name: /^显示轨迹/ })
+  await trails.check()
+  await expect(page.locator('.trail-status')).toHaveText('轨迹 · 0 个采样点')
+  await page.getByRole('button', { name: '运行模拟' }).click()
+  await expect.poll(() => trailSamples(page)).toBeGreaterThan(2)
+  const beforeDisable = await simulationTime(page)
+
+  await trails.uncheck()
+  await expect(page.locator('.trail-status')).toHaveCount(0)
+  await expect(page.getByRole('button', { name: '暂停模拟' })).toBeVisible()
+  const afterDisable = await simulationTime(page)
+  expect(afterDisable).toBeGreaterThanOrEqual(beforeDisable)
+
+  await trails.check()
+  await expect.poll(() => trailSamples(page)).toBeGreaterThan(2)
+  await expect(page.getByRole('button', { name: '暂停模拟' })).toBeVisible()
+  expect(await simulationTime(page)).toBeGreaterThanOrEqual(afterDisable)
+  await page.getByRole('button', { name: '暂停模拟' }).click()
+})
+
+test('单步记录轨迹，重置和编辑清空路径，刷新只保留开关', async ({ page }) => {
+  await preset(page, 'collision')
+  const trails = page.getByRole('checkbox', { name: /^显示轨迹/ })
+  await trails.check()
+  await page.getByRole('button', { name: '单步前进' }).click()
+  await expect.poll(() => trailSamples(page)).toBeGreaterThanOrEqual(2)
+  await page.getByRole('button', { name: '重置模拟' }).click()
+  await expect(trails).toBeChecked()
+  await expect(page.locator('.trail-status')).toHaveText('轨迹 · 0 个采样点')
+
+  await page.getByRole('button', { name: '单步前进' }).click()
+  await expect.poll(() => trailSamples(page)).toBeGreaterThanOrEqual(2)
+  await expect(page.getByText('已保存到本机', { exact: true })).toBeVisible()
+  await page.reload()
+  await expect(trails).toBeChecked()
+  await expect(page.locator('.trail-status')).toHaveText('轨迹 · 0 个采样点')
+
+  await page.getByRole('button', { name: '单步前进' }).click()
+  await expect.poll(() => trailSamples(page)).toBeGreaterThanOrEqual(2)
+  await editNumber(page, '位置 X', 3.2)
+  await expect(page.locator('.trail-status')).toHaveText('轨迹 · 0 个采样点')
+})

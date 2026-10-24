@@ -6,7 +6,15 @@ import {
 } from '../src/model.js'
 import { endpoints, integrate, measure } from '../src/physics.js'
 
-const pack = (objects, overrides = {}) => ({ version: SCENE_VERSION, name: 'Test scene', objects, gravity: false, ground: false, friction: false, gravityValue: 9.8, frictionValue: 0.2, ...overrides })
+const pack = (objects, overrides = {}) => ({ version: SCENE_VERSION, name: 'Test scene', objects, gravity: false, ground: false, friction: false, trails: false, gravityValue: 9.8, frictionValue: 0.2, ...overrides })
+
+test('trail preference is preserved while old scenes default to no trails', () => {
+  const saved = pack([], { trails: true })
+  assert.equal(parseScene(JSON.stringify(saved)).trails, true)
+  delete saved.trails
+  assert.equal(parseScene(saved).trails, false)
+  assert.equal(parseScene({ ...saved, trails: 'false' }).trails, false)
+})
 
 test('catalogs give every supported object a label, color, and factory', () => {
   assert.equal(SCALE, 100)

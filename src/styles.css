@@ -93,6 +93,7 @@ button { transition: background-color .15s, color .15s, border-color .15s; }
 .canvas-view-button:hover { background: #eee9df; }
 .canvas-zoom-value { color: #857a68; font: 10px var(--mono); min-width: 38px; text-align: center; }
 .canvas-instruction { position: absolute; top: 20px; left: 14px; color: #9a9080; font-size: 10px; pointer-events: none; }
+.trail-status { position: absolute; right: 24px; bottom: 22px; color: #8a7d69; background: #fcfbf7d9; padding: 4px 6px; border-radius: 3px; font: 10px var(--mono); pointer-events: none; }
 .canvas-connection-notice { position: absolute; bottom: 14px; left: 50%; transform: translateX(-50%); z-index: 2; display: flex; gap: 14px; align-items: center; background: #fdfbf1; border: 1px solid #d6c9b4; padding: 10px 12px; font-size: 11px; white-space: nowrap; border-radius: 4px; box-shadow: 0 2px 12px #4433220d; }
 .canvas-connection-notice button { color: #a15e49; background: transparent; font-size: 11px; }
 .measurement-strip { display: grid; grid-template-columns: 1fr 1fr 1fr; border-bottom: 1px solid #d9d2c5; padding: 17px 0 14px; margin-top: 2px; }

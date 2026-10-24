@@ -115,6 +115,7 @@ function EnvironmentFields({ environment, onEnvironmentChange }) {
       {environment.gravity && <NumberField label="重力加速度" value={environment.gravityValue ?? 9.8} suffix="m/s²" min={0} max={30} step={0.1} onChange={(gravityValue) => onEnvironmentChange({ gravityValue })} />}
       <Toggle label="摩擦" detail="接触面摩擦" checked={environment.friction} onChange={(friction) => onEnvironmentChange({ friction })} />
       {environment.friction && <NumberField label="摩擦系数" value={environment.frictionValue ?? 0.2} min={0} max={1} step={0.05} onChange={(frictionValue) => onEnvironmentChange({ frictionValue })} />}
+      <Toggle label="显示轨迹" detail="记录小球与滑块的运动路径" checked={environment.trails} onChange={(trails) => onEnvironmentChange({ trails })} />
     </section>
   )
 }

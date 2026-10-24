@@ -114,3 +114,40 @@ test('关闭地面后不再绘制地面的斜线标记', () => {
   assert.ok(enabled.calls.some(groundStart))
   assert.ok(!disabled.calls.some(groundStart))
 })
+
+test('未开启轨迹或没有记录时不增加绘制路径', () => {
+  const baseline = recordingCanvas()
+  const noTrails = recordingCanvas()
+  const tooShort = recordingCanvas()
+  const options = { ...drawingOptions, objects: [ball] }
+  drawScene(baseline, options)
+  drawScene(noTrails, { ...options, trails: {} })
+  drawScene(tooShort, { ...options, trails: { ball: [{ x: 10, y: 20 }] } })
+  assert.deepEqual(noTrails.calls, baseline.calls)
+  assert.deepEqual(tooShort.calls, baseline.calls)
+})
+
+test('轨迹绘制连续折线并位于物体下方，使用同一个画布变换', () => {
+  const canvas = recordingCanvas()
+  const trails = { ball: [{ x: 23, y: 29 }, { x: 45, y: 61 }, { x: 78, y: 96 }] }
+  const snapshot = structuredClone(trails)
+  drawScene(canvas, { ...drawingOptions, objects: [ball], view: { zoom: 2, x: 20, y: -10 }, trails })
+  const firstPoint = canvas.calls.findIndex(call => call.name === 'moveTo' && call.args[0] === 23 && call.args[1] === 29)
+  assert.ok(firstPoint >= 0)
+  assert.deepEqual(canvas.calls[firstPoint + 1], { name: 'lineTo', args: [45, 61] })
+  assert.deepEqual(canvas.calls[firstPoint + 2], { name: 'lineTo', args: [78, 96] })
+  const body = canvas.calls.findIndex(call => call.name === 'arc' && call.args[0] === ball.x && call.args[1] === ball.y)
+  assert.ok(body > firstPoint)
+  assert.ok(canvas.calls.slice(0, firstPoint).some(call => call.name === 'scale' && call.args[0] === 2 && call.args[1] === 2))
+  assert.deepEqual(trails, snapshot)
+})
+
+test('删除物体的旧轨迹和非物体元件的轨迹被忽略', () => {
+  const baseline = recordingCanvas()
+  const withInvalidIds = recordingCanvas()
+  const options = { ...drawingOptions, objects: [ball, rod] }
+  const points = [{ x: 17, y: 31 }, { x: 41, y: 59 }]
+  drawScene(baseline, options)
+  drawScene(withInvalidIds, { ...options, trails: { removed: points, rod: points } })
+  assert.deepEqual(withInvalidIds.calls, baseline.calls)
+})
