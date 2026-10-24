@@ -1,6 +1,8 @@
 import { COLORS } from './model.js'
 import { angleOnArc, arcBase, ARC_WALL_HALF } from './arcGeometry.js'
 export const WORLD_SIZE = { width: 900, height: 620 }
+const CONNECTOR_TYPES = new Set(['rod', 'rope', 'spring'])
+const BODY_TYPES = new Set(['ball', 'block', 'arc', 'joint'])
 
 export function connectorEndpoints(object, objects) {
   const first = objects.find((candidate) => candidate.id === object.bodyA)
@@ -56,10 +58,16 @@ function arcOuterSides(object) {
 
 export function hitObject(objects, point, scale, groundEnabled, bodiesOnly = false) {
   const padding = 8 / scale
-  // 物体画在连接线的上层，所以优先选择物体。
-  const sorted = [...objects.filter((object) => object.type !== 'ball' && object.type !== 'block'), ...objects.filter((object) => object.type === 'ball' || object.type === 'block')]
+  // 接头位于最上层；重合时先选接头，再选物体，最后选连接线。
+  const sorted = [
+    ...objects.filter(object => !BODY_TYPES.has(object.type)),
+    ...objects.filter(object => object.type === 'arc'),
+    ...objects.filter(object => object.type === 'ball' || object.type === 'block'),
+    ...objects.filter(object => object.type === 'joint'),
+  ]
   for (let index = sorted.length - 1; index >= 0; index -= 1) {
     const object = sorted[index]
+    if (object.type === 'joint' && Math.hypot(point.x - object.x, point.y - object.y) <= 11 / scale) return object
     if (object.type === 'ball' && Math.hypot(point.x - object.x, point.y - object.y) <= object.radius + padding) return object
     if (object.type === 'block' && Math.abs(point.x - object.x) <= object.width / 2 + padding && Math.abs(point.y - object.y) <= object.height / 2 + padding) return object
     if (object.type === 'arc') {
@@ -92,6 +100,28 @@ export function hitObject(objects, point, scale, groundEnabled, bodiesOnly = fal
     }
   }
   return null
+}
+
+export function hitConnectionTarget(objects, point, scale = 1, sourceId) {
+  const displayScale = Number.isFinite(scale) && scale > 0 ? scale : 1
+  const endpointRadius = 12 / displayScale
+  let closest = null
+  const consider = (target, position, priority) => {
+    const distance = Math.hypot(point.x - position.x, point.y - position.y)
+    if (!closest || distance < closest.distance - 1e-7 || (Math.abs(distance - closest.distance) <= 1e-7 && priority > closest.priority)) closest = { target, distance, priority }
+  }
+  for (const object of objects) {
+    if (object.id === sourceId) continue
+    if (BODY_TYPES.has(object.type) && hitObject([object], point, displayScale, true, true)) {
+      consider(object.id, { x: object.cx ?? object.x, y: object.cy ?? object.y }, object.type === 'joint' ? 2 : 1)
+    } else if (CONNECTOR_TYPES.has(object.type)) {
+      const ends = connectorEndpoints(object, objects)
+      for (const end of ['a', 'b']) {
+        if (Math.hypot(point.x - ends[end].x, point.y - ends[end].y) <= endpointRadius) consider({ connectorId: object.id, end }, ends[end], 0)
+      }
+    }
+  }
+  return closest?.target ?? null
 }
 
 export function viewTransform(size, view) {
@@ -288,11 +318,14 @@ function drawConnector(context, object, objects, selected, scale, connectionMode
     context.stroke()
   }
   context.lineWidth = 1.7 / scale
-  drawAnchor(context, a, !object.bodyA, selected, scale)
-  drawAnchor(context, b, !object.bodyB, selected, scale)
-  if (selected) {
+  const availableTarget = connectionMode && connectionMode.id !== object.id
+  drawAnchor(context, a, !object.bodyA, selected || availableTarget, scale)
+  drawAnchor(context, b, !object.bodyB, selected || availableTarget, scale)
+  if (selected || availableTarget) {
     label(context, 'A', a.x, a.y - 17 / scale, scale, COLORS[object.type])
     label(context, 'B', b.x, b.y - 17 / scale, scale, COLORS[object.type])
+  }
+  if (selected) {
     label(context, `${(length / 100).toFixed(2)} m`, (a.x + b.x) / 2, (a.y + b.y) / 2 - 18 / scale, scale, COLORS[object.type])
   }
   if (connectionMode?.id === object.id) {
@@ -302,6 +335,26 @@ function drawConnector(context, object, objects, selected, scale, connectionMode
     circle(context, endpoint.x, endpoint.y, 10 / scale)
     context.stroke()
   }
+}
+
+function drawJoint(context, object, selected, scale) {
+  const color = COLORS.joint || '#596e62'
+  context.fillStyle = '#fcfbf7'
+  context.strokeStyle = color
+  context.lineWidth = 2 / scale
+  circle(context, object.x, object.y, 5 / scale)
+  context.fill()
+  context.stroke()
+  if (!selected) return
+  context.save()
+  context.setLineDash([3 / scale, 3 / scale])
+  context.lineWidth = 1 / scale
+  context.strokeStyle = '#df6f55'
+  circle(context, object.x, object.y, 11 / scale)
+  context.stroke()
+  context.restore()
+  label(context, object.name || '连接点', object.x, object.y - 21 / scale, scale, color)
+  label(context, object.fixed ? '固定' : `${object.mass} kg`, object.x, object.y + 20 / scale, scale, color)
 }
 
 function drawBody(context, object, selected, scale, compact) {
@@ -445,6 +498,12 @@ export function drawScene(canvas, { size, view, objects, groundEnabled, selected
     if (object.type !== 'ball' && object.type !== 'block') continue
     context.save()
     drawBody(context, object, selectedId === object.id, transform.scale, size.width < 560)
+    context.restore()
+  }
+  for (const object of objects) {
+    if (object.type !== 'joint') continue
+    context.save()
+    drawJoint(context, object, selectedId === object.id, transform.scale)
     context.restore()
   }
   drawSnapHint(context, snapHint, transform.scale)

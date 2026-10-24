@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { connectorEndpoints, drawScene, hitObject, viewTransform, WORLD_SIZE } from '../src/canvasDrawing.js'
+import { connectorEndpoints, drawScene, hitConnectionTarget, hitObject, viewTransform, WORLD_SIZE } from '../src/canvasDrawing.js'
 import { arcBase } from '../src/arcGeometry.js'
 
 const ball = { id: 'ball', name: '小球', type: 'ball', x: 100, y: 150, radius: 15, mass: 1, vx: 0, vy: 0 }
@@ -202,4 +202,60 @@ test('删除物体的旧轨迹和非物体元件的轨迹被忽略', () => {
   drawScene(baseline, options)
   drawScene(withInvalidIds, { ...options, trails: { removed: points, rod: points } })
   assert.deepEqual(withInvalidIds.calls, baseline.calls)
+})
+
+test('共享接头优先于重合物体命中，两个连接件端点使用同一坐标', () => {
+  const joint = { id: 'joint', type: 'joint', name: '连接点', x: 100, y: 150, mass: 0.01, vx: 0, vy: 0, fixed: false }
+  const first = { ...rod, bodyA: joint.id }
+  const second = { ...rod, id: 'rope', type: 'rope', bodyA: '', bodyB: joint.id }
+  const objects = [joint, ball, first, second]
+  assert.equal(hitObject(objects, { x: 100, y: 150 }, 1, true)?.id, joint.id)
+  assert.equal(hitObject(objects, { x: 110, y: 150 }, 1, true, true)?.id, joint.id)
+  assert.deepEqual(connectorEndpoints(first, objects).a, connectorEndpoints(second, objects).b)
+  const moved = objects.map(object => object.id === joint.id ? { ...object, x: 125, y: 165 } : object)
+  assert.deepEqual(connectorEndpoints(first, moved).a, { x: 125, y: 165 })
+  assert.deepEqual(connectorEndpoints(second, moved).b, { x: 125, y: 165 })
+  const arc = { id: 'arc', type: 'arc', cx: 300, cy: 300, radius: 100, startAngle: 0, angle: 180 }
+  const overlapping = { ...rod, bodyA: '', ax: 200, ay: 415, bx: 400, by: 415 }
+  assert.equal(hitObject([arc, overlapping], { x: 300, y: 415 }, 1, true)?.id, arc.id)
+})
+
+test('连接选择只选其他连接件端点，按最近距离选择且排除自身', () => {
+  const first = { ...rod, bodyA: '', ax: 100, ay: 100, bx: 260, by: 100 }
+  const second = { ...rod, id: 'rope', type: 'rope', bodyA: '', ax: 268, ay: 100, bx: 500, by: 100 }
+  assert.deepEqual(hitConnectionTarget([first, second], { x: 262, y: 100 }, 1, first.id), { connectorId: second.id, end: 'a' })
+  assert.deepEqual(hitConnectionTarget([first, second], { x: 266, y: 100 }, 1), { connectorId: second.id, end: 'a' })
+  assert.deepEqual(hitConnectionTarget([first, second], { x: 261, y: 100 }, 1), { connectorId: first.id, end: 'b' })
+  assert.equal(hitConnectionTarget([first], { x: 260, y: 100 }, 1, first.id), null)
+  assert.equal(hitConnectionTarget([first, second], { x: 180, y: 100 }, 1), null)
+  assert.equal(hitConnectionTarget([first, second], { x: 500, y: 113 }, 1), null)
+  assert.deepEqual(hitConnectionTarget([first, second], { x: 500, y: 113 }, 0.5), { connectorId: second.id, end: 'b' })
+})
+
+test('连接选择支持物体、槽体、接头，重合目标优先共享接头', () => {
+  const joint = { id: 'joint', type: 'joint', x: 100, y: 150, mass: 0.01 }
+  const attached = { ...rod, bodyA: joint.id }
+  assert.equal(hitConnectionTarget([ball, joint, attached], { x: 100, y: 150 }, 1), joint.id)
+  assert.equal(hitConnectionTarget([ball, rod], { x: 102, y: 150 }, 1), ball.id)
+  assert.equal(hitConnectionTarget([block], { x: 335, y: 166 }, 1), block.id)
+  const arc = { id: 'arc', type: 'arc', cx: 300, cy: 300, radius: 100, startAngle: 0, angle: 180 }
+  const base = arcBase(arc)
+  assert.equal(hitConnectionTarget([arc], { x: 300, y: base.bottom }, 1), arc.id)
+  assert.equal(hitConnectionTarget([{ id: 'ground', type: 'ground', x: 0, y: 100, width: 500 }], { x: 100, y: 100 }, 1), null)
+  assert.equal(hitConnectionTarget([joint], { x: 100, y: 150 }, NaN), joint.id)
+})
+
+test('连接模式标出其他端点，接头保持屏幕大小且不绘制运动轨迹', () => {
+  const joint = { id: 'joint', type: 'joint', name: '连接点 1', x: 100, y: 150, mass: 0.01, fixed: false }
+  const objects = [joint, { ...rod, bodyA: joint.id }]
+  const canvas = recordingCanvas()
+  const options = { ...drawingOptions, objects, selectedId: joint.id, connectionMode: { id: 'another', end: 'a' }, view: { zoom: 2, x: 0, y: 0 } }
+  drawScene(canvas, options)
+  assert.ok(canvas.calls.some(call => call.name === 'fillText' && call.args[0] === '连接点 1'))
+  assert.ok(canvas.calls.some(call => call.name === 'fillText' && call.args[0] === '0.01 kg'))
+  assert.ok(canvas.calls.some(call => call.name === 'fillText' && call.args[0] === 'A'))
+  assert.ok(canvas.calls.some(call => call.name === 'arc' && call.args[0] === joint.x && call.args[1] === joint.y && call.args[2] === 2.5))
+  const withTrail = recordingCanvas()
+  drawScene(withTrail, { ...options, trails: { joint: [{ x: 20, y: 30 }, { x: 60, y: 70 }] } })
+  assert.deepEqual(withTrail.calls, canvas.calls)
 })

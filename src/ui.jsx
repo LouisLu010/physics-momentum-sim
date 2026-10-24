@@ -8,6 +8,7 @@ const iconPaths = {
   trash: <><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v5M14 11v5" /></>,
   ball: <><circle cx="12" cy="12" r="8" /><path d="M8 10a4 4 0 0 1 3-2" /></>,
   block: <rect x="4" y="6" width="16" height="12" rx="2" />,
+  joint: <><circle cx="12" cy="12" r="4" /><path d="M12 2v6M12 16v6M2 12h6M16 12h6" /></>,
   arc: <><path d="M3 7a9 9 0 0 0 18 0M5 7a7 7 0 0 0 14 0" /></>,
   rod: <><path d="m6 18 12-12" /><circle cx="5" cy="19" r="2" /><circle cx="19" cy="5" r="2" /></>,
   rope: <><circle cx="3" cy="5" r="1" /><path d="M4 6c1 12 15 12 16 0" /><circle cx="21" cy="5" r="1" /></>,

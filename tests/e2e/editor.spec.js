@@ -592,3 +592,162 @@ test('小球从左切线上方落入、由右口飞出后可原路回槽', async
   expect(Math.hypot(returnedBall.x - returnedArc.x, returnedBall.y - returnedArc.y)).toBeLessThanOrEqual(innerRadius + 1)
   expect(Number.parseFloat(await page.getByTestId('momentum-x').textContent())).toBeCloseTo(0, 2)
 })
+
+function connectorScene(overrides = {}) {
+  return {
+    version: 1, name: '杆绳连接实验', gravity: true, gravityValue: 9.8, ground: false, friction: false, frictionValue: 0.2, trails: false,
+    objects: [
+      { id: 'joined-rod', type: 'rod', name: '连接测试杆', ax: 240, ay: 120, bx: 380, by: 240, bodyA: '', bodyB: '', length: Math.hypot(140, 120), stiffness: 40, damping: 0 },
+      { id: 'joined-rope', type: 'rope', name: '连接测试绳', ax: 450, ay: 240, bx: 610, by: 360, bodyA: '', bodyB: 'joined-ball', length: 200, stiffness: 40, damping: 0 },
+      { id: 'joined-ball', type: 'ball', name: '连接测试球', x: 610, y: 360, radius: 19, mass: 1, vx: 0, vy: 0, restitution: 0.5, fixed: false, rodId: '' },
+    ],
+    ...overrides,
+  }
+}
+
+async function loadConnectorScene(page, scene = connectorScene()) {
+  await page.getByLabel('选择场景文件').setInputFiles({ name: 'connectors.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(scene)) })
+  await expect(page.locator('.toast')).toContainText('场景已导入。')
+}
+
+async function connectRodToRope(page) {
+  await page.locator('.scene-item').filter({ hasText: '连接测试杆' }).click()
+  await page.getByRole('combobox', { name: '端点 B', exact: true }).selectOption(`endpoint:${JSON.stringify(['joined-rope', 'a'])}`)
+  const scene = await exportScene(page)
+  const rod = scene.objects.find(object => object.id === 'joined-rod')
+  const rope = scene.objects.find(object => object.id === 'joined-rope')
+  const joint = scene.objects.find(object => object.type === 'joint')
+  expect(joint).toBeTruthy()
+  expect(rod.bodyB).toBe(joint.id)
+  expect(rope.bodyA).toBe(joint.id)
+  return { scene, rod, rope, joint }
+}
+
+test('滑块底面可吸附地面，支持水平移动、Alt 绕过和关闭地面', async ({ page }) => {
+  await preset(page, 'arc')
+  await page.locator('.scene-item').filter({ hasText: '滑块 A' }).click()
+  const original = await exportScene(page)
+  const block = original.objects.find(object => object.type === 'block')
+  const ground = original.objects.find(object => object.type === 'ground')
+  const restingY = ground.y - block.height / 2
+
+  await dragStart(page, block)
+  await dragMove(page, { x: 720, y: restingY + 5 })
+  await expect(page.locator('.canvas-snap-notice')).toContainText('滑块底面已贴合地面')
+  expect(Number(await numberField(page, '位置 Y').inputValue()) * 100).toBeCloseTo(restingY, 2)
+  await dragMove(page, { x: 750, y: restingY + 7 })
+  await page.mouse.up()
+  let moved = (await exportScene(page)).objects.find(object => object.id === block.id)
+  expect(moved.y + moved.height / 2).toBeCloseTo(ground.y, 3)
+  expect(Math.abs(moved.x - 750)).toBeLessThan(2)
+
+  await dragStart(page, moved)
+  await dragMove(page, { x: 740, y: restingY - 55 })
+  await expect(page.locator('.canvas-snap-notice')).toHaveCount(0)
+  await page.mouse.up()
+  moved = (await exportScene(page)).objects.find(object => object.id === block.id)
+  expect(Math.abs(moved.y - (restingY - 55))).toBeLessThan(2)
+
+  await dragStart(page, moved)
+  await page.keyboard.down('Alt')
+  await dragMove(page, { x: 740, y: restingY + 8 })
+  await expect(page.locator('.canvas-snap-notice')).toHaveCount(0)
+  await page.mouse.up()
+  await page.keyboard.up('Alt')
+  moved = (await exportScene(page)).objects.find(object => object.id === block.id)
+  expect(Math.abs(moved.y - (restingY + 8))).toBeLessThan(2)
+
+  await page.getByRole('checkbox', { name: /^地面/ }).uncheck()
+  await dragStart(page, moved)
+  await dragMove(page, { x: 725, y: restingY + 6 })
+  await expect(page.locator('.canvas-snap-notice')).toHaveCount(0)
+  await page.mouse.up()
+  const result = (await exportScene(page)).objects.find(object => object.id === block.id)
+  expect(Math.abs(result.y - (restingY + 6))).toBeLessThan(2)
+})
+
+test('杆与绳的下拉连接生成共同节点，连接点质量可编辑且弹簧可接入', async ({ page }) => {
+  await loadConnectorScene(page)
+  const { joint } = await connectRodToRope(page)
+  await page.locator('.scene-item').filter({ hasText: joint.name }).click()
+  await expect(numberField(page, '质量')).toHaveValue('0.01')
+  await expect(numberField(page, '恢复系数')).toHaveCount(0)
+  await expect(numberField(page, '半径')).toHaveCount(0)
+  await editNumber(page, '质量', 0.02)
+  await expect(numberField(page, '质量')).toHaveValue('0.02')
+  await page.getByRole('button', { name: '添加弹簧', exact: true }).click()
+  await page.getByRole('combobox', { name: '端点 A', exact: true }).selectOption(`endpoint:${JSON.stringify(['joined-rod', 'b'])}`)
+  const result = await exportScene(page)
+  const joints = result.objects.filter(object => object.type === 'joint')
+  expect(joints).toHaveLength(1)
+  expect(joints[0].mass).toBe(0.02)
+  expect(result.objects.find(object => object.type === 'spring').bodyA).toBe(joint.id)
+  await expect(page.getByRole('combobox', { name: '端点 A', exact: true })).toHaveValue(joint.id)
+})
+
+test('画布点选或拖动连接器端点可连接杆绳，Alt 松手保持未连接', async ({ page }) => {
+  await loadConnectorScene(page)
+  await page.locator('.scene-item').filter({ hasText: '连接测试杆' }).click()
+  await page.getByRole('button', { name: '在画布连接端点 B', exact: true }).click()
+  const ropeEnd = await canvasPoint(page, 450, 240)
+  await page.mouse.click(ropeEnd.x, ropeEnd.y)
+  let scene = await exportScene(page)
+  let joint = scene.objects.find(object => object.type === 'joint')
+  expect(joint).toBeTruthy()
+  expect(scene.objects.find(object => object.id === 'joined-rod').bodyB).toBe(joint.id)
+  expect(scene.objects.find(object => object.id === 'joined-rope').bodyA).toBe(joint.id)
+
+  await loadConnectorScene(page)
+  await page.locator('.scene-item').filter({ hasText: '连接测试杆' }).click()
+  await dragStart(page, { x: 380, y: 240 })
+  await dragMove(page, { x: 454, y: 242 })
+  await page.mouse.up()
+  scene = await exportScene(page)
+  joint = scene.objects.find(object => object.type === 'joint')
+  expect(joint).toBeTruthy()
+  expect(scene.objects.find(object => object.id === 'joined-rod').bodyB).toBe(joint.id)
+  expect(scene.objects.find(object => object.id === 'joined-rope').bodyA).toBe(joint.id)
+
+  await loadConnectorScene(page)
+  await page.locator('.scene-item').filter({ hasText: '连接测试杆' }).click()
+  await dragStart(page, { x: 380, y: 240 })
+  await page.keyboard.down('Alt')
+  await dragMove(page, { x: 454, y: 242 })
+  await page.mouse.up()
+  await page.keyboard.up('Alt')
+  const bypassed = await exportScene(page)
+  expect(bypassed.objects.some(object => object.type === 'joint')).toBe(false)
+  expect(bypassed.objects.find(object => object.id === 'joined-rod').bodyB).toBe('')
+})
+
+test('杆绳链运行保持衔接，保存导入可恢复并在删除时清理连接点', async ({ page }) => {
+  await loadConnectorScene(page)
+  const { scene: initial, rod, rope, joint } = await connectRodToRope(page)
+  await runUntil(page, 0.25)
+  const motion = async name => {
+    await page.locator('.scene-item').filter({ hasText: name }).click()
+    return { x: Number(await numberField(page, '位置 X').inputValue()) * 100, y: Number(await numberField(page, '位置 Y').inputValue()) * 100 }
+  }
+  const movingJoint = await motion(joint.name)
+  const movingBall = await motion('连接测试球')
+  expect(Math.hypot(movingJoint.x - joint.x, movingJoint.y - joint.y)).toBeGreaterThan(1)
+  expect(Math.abs(Math.hypot(movingJoint.x - rod.ax, movingJoint.y - rod.ay) - rod.length)).toBeLessThan(3)
+  expect(Math.hypot(movingBall.x - movingJoint.x, movingBall.y - movingJoint.y)).toBeLessThanOrEqual(rope.length + 3)
+  await page.getByRole('button', { name: '重置模拟' }).click()
+  await expect(page.getByText('已保存到本机', { exact: true })).toBeVisible()
+  await page.reload()
+  expect(await exportScene(page)).toEqual(initial)
+  await page.getByRole('button', { name: '清空', exact: true }).click()
+  await loadConnectorScene(page, initial)
+  expect(await exportScene(page)).toEqual(initial)
+
+  await page.locator('.scene-item').filter({ hasText: '连接测试杆' }).click()
+  await page.getByRole('button', { name: '删除选中元件' }).click()
+  const deleted = await exportScene(page)
+  expect(deleted.objects.some(object => object.type === 'joint')).toBe(false)
+  const remainingRope = deleted.objects.find(object => object.id === rope.id)
+  expect(remainingRope.bodyA).toBe('')
+  expect(remainingRope.ax).toBeCloseTo(joint.x, 3)
+  expect(remainingRope.ay).toBeCloseTo(joint.y, 3)
+  expect(remainingRope.bodyB).toBe('joined-ball')
+})

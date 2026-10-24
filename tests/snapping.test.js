@@ -138,3 +138,27 @@ test('upper alignment chooses the closest horizontal line and then the nearest r
   assert.equal(closestRim.hint.point.y, 200)
   assert.equal(closestRim.object.y, 50)
 })
+
+test('block bottom snaps to ground, preserves horizontal position and uses its actual height', () => {
+  const block = { id: 'block', type: 'block', x: 300, y: 392, width: 76, height: 48 }
+  const result = snapObject(block, [ground])
+  assert.equal(result.object.x, 300)
+  assert.equal(result.object.y + block.height / 2, 420)
+  assert.equal(result.hint.kind, 'block-ground')
+  assert.equal(result.hint.label, '滑块底面已贴合地面')
+  assert.equal(block.y, 392)
+  const taller = snapObject({ ...block, y: 369, height: 100 }, [ground])
+  assert.equal(taller.object.y, 370)
+})
+
+test('block snap respects finite floors, zoom tolerance, Alt and disabled ground', () => {
+  const block = { id: 'block', type: 'block', x: 300, y: 385, width: 80, height: 48 }
+  assert.ok(snapObject(block, [ground]).hint)
+  assert.equal(snapObject(block, [ground], { scale: 2 }).hint, null)
+  assert.equal(snapObject(block, [ground], { disabled: true }).hint, null)
+  assert.equal(snapObject(block, [ground], { groundEnabled: false }).hint, null)
+  assert.equal(snapObject({ ...block, x: 900 }, [ground]).hint, null)
+  assert.equal(snapObject({ ...block, y: 350 }, [ground]).hint, null)
+  const closer = { ...ground, id: 'closer', y: 410 }
+  assert.equal(snapObject(block, [ground, closer]).object.y, 386)
+})

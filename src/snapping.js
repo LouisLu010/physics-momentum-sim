@@ -28,8 +28,8 @@ export function snapObject(object, objects, { groundEnabled = true, scale = 1, d
       return { object: { ...object, x: point.x, y }, hint: { kind: 'ball-arc', point: { x: point.contactX, y: point.y }, line: { x1: point.contactX, y1: Math.min(y, point.y) - object.radius - 25 / displayScale, x2: point.contactX, y2: point.y + object.radius + 25 / displayScale }, label: bestPoint ? '小球已对齐竖直切点' : '小球已对齐竖直切线' } }
     }
   }
-  if (object.type === 'arc' && groundEnabled) {
-    const base = arcBase(object)
+  if (['arc', 'block'].includes(object.type) && groundEnabled) {
+    const base = object.type === 'arc' ? arcBase(object) : { left: object.x - object.width / 2, right: object.x + object.width / 2, bottom: object.y + object.height / 2 }
     let best = null
     for (const ground of objects.filter(candidate => candidate.type === 'ground')) {
       const left = Math.min(ground.x, ground.x + ground.width)
@@ -40,7 +40,8 @@ export function snapObject(object, objects, { groundEnabled = true, scale = 1, d
     }
     if (best) {
       const { ground, left, right } = best
-      return { object: { ...object, cy: object.cy + ground.y - base.bottom }, hint: { kind: 'arc-ground', point: { x: (left + right) / 2, y: ground.y }, line: { x1: left, y1: ground.y, x2: right, y2: ground.y }, label: '槽底已贴合地面' } }
+      const key = object.type === 'arc' ? 'cy' : 'y'
+      return { object: { ...object, [key]: object[key] + ground.y - base.bottom }, hint: { kind: `${object.type}-ground`, point: { x: (left + right) / 2, y: ground.y }, line: { x1: left, y1: ground.y, x2: right, y2: ground.y }, label: object.type === 'arc' ? '槽底已贴合地面' : '滑块底面已贴合地面' } }
     }
   }
   return { object, hint: null }

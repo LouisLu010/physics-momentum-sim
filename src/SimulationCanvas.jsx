@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { connectorEndpoints, drawScene, hitObject, viewTransform, WORLD_SIZE } from './canvasDrawing.js'
+import { connectorEndpoints, drawScene, hitConnectionTarget, hitObject, viewTransform, WORLD_SIZE } from './canvasDrawing.js'
 
 const INITIAL_VIEW = { zoom: 1, x: 0, y: 0 }
 const CONNECTOR_TYPES = ['rod', 'rope', 'spring']
@@ -11,7 +11,7 @@ function ViewIcon({ type }) {
   </svg>
 }
 
-export default function SimulationCanvas({ objects, groundEnabled, selectedId, onSelect, onMove, onDropTool, connectionMode, onConnectionPick, onCancelConnection, onEndpointMove, onDragEnd, snapHint = null, trails = EMPTY_TRAILS }) {
+export default function SimulationCanvas({ objects, groundEnabled, selectedId, onSelect, onMove, onDropTool, connectionMode, onConnectionPick, onCancelConnection, onEndpointMove, onEndpointDrop, onDragEnd, snapHint = null, trails = EMPTY_TRAILS }) {
   const containerRef = useRef(null)
   const canvasRef = useRef(null)
   const dragRef = useRef(null)
@@ -103,22 +103,28 @@ export default function SimulationCanvas({ objects, groundEnabled, selectedId, o
     const point = worldPoint(local)
     const { scale } = viewTransform(sizeRef.current, viewRef.current)
     if (connectionMode) {
-      const target = hitObject(objects, point, scale, groundEnabled, true)
-      if (target) onConnectionPick(target.id)
+      const target = hitConnectionTarget(objects, point, scale, connectionMode.id)
+      if (target) onConnectionPick(target)
       return
     }
     if (event.button === 0) {
+      const target = hitObject(objects, point, scale, groundEnabled)
+      if (target?.type === 'joint') {
+        onSelect(target.id)
+        dragRef.current = { mode: 'object', id: target.id, initialPoint: point, originObjects: objects }
+        setDragging(true)
+        return
+      }
       const selected = objects.find((object) => object.id === selectedId)
       if (selected && CONNECTOR_TYPES.includes(selected.type)) {
         const ends = connectorEndpoints(selected, objects)
         const endpoint = ['a', 'b'].find((end) => Math.hypot(point.x - ends[end].x, point.y - ends[end].y) < 11 / scale)
         if (endpoint) {
-          dragRef.current = { mode: 'endpoint', id: selected.id, end: endpoint }
+          dragRef.current = { mode: 'endpoint', id: selected.id, end: endpoint, initialLocal: local, moved: false }
           setDragging(true)
           return
         }
       }
-      const target = hitObject(objects, point, scale, groundEnabled)
       if (target) {
         onSelect(target.id)
         dragRef.current = { mode: 'object', id: target.id, initialPoint: point, originObjects: objects }
@@ -153,7 +159,11 @@ export default function SimulationCanvas({ objects, groundEnabled, selectedId, o
       // 始终从手势起点计算位移，避免吸附后的坐标反馈造成对象粘在目标上。
       onMove(drag.id, point.x - drag.initialPoint.x, point.y - drag.initialPoint.y, { originObjects: drag.originObjects, scale, bypassSnap: event.altKey })
     } else if (drag.mode === 'endpoint') {
-      onEndpointMove?.(drag.id, drag.end, worldPoint(local))
+      if (!drag.moved && Math.hypot(local.x - drag.initialLocal.x, local.y - drag.initialLocal.y) < 2) return
+      drag.moved = true
+      drag.lastPoint = worldPoint(local)
+      const { scale } = viewTransform(sizeRef.current, viewRef.current)
+      onEndpointMove?.(drag.id, drag.end, drag.lastPoint, { scale, bypassSnap: event.altKey })
     }
   }
 
@@ -162,10 +172,14 @@ export default function SimulationCanvas({ objects, groundEnabled, selectedId, o
     if (pointersRef.current.size === 1 && dragRef.current?.mode === 'pinch') {
       dragRef.current = { mode: 'pan', previous: [...pointersRef.current.values()][0] }
     } else if (pointersRef.current.size === 0) {
-      const wasDragging = dragRef.current !== null
+      const drag = dragRef.current
       dragRef.current = null
       setDragging(false)
-      if (wasDragging) onDragEnd?.()
+      if (drag?.mode === 'endpoint' && drag.moved && event.type === 'pointerup') {
+        const { scale } = viewTransform(sizeRef.current, viewRef.current)
+        onEndpointDrop?.(drag.id, drag.end, worldPoint(localPoint(event)), { scale, bypassSnap: event.altKey })
+      }
+      if (drag) onDragEnd?.()
     }
   }
 
@@ -202,7 +216,7 @@ export default function SimulationCanvas({ objects, groundEnabled, selectedId, o
       <button className="canvas-view-button" title="放大" aria-label="放大画布" onClick={() => zoomFromButton(1.2)}><ViewIcon type="plus" /></button>
       <button className="canvas-view-button" title="复位视角" aria-label="复位视角" onClick={() => updateView(INITIAL_VIEW)}><ViewIcon type="reset" /></button>
     </div>
-    {connectionMode ? <div className="canvas-connection-notice" role="status">点击小球、滑块或槽体，连接端点 {connectionMode.end.toUpperCase()}<button onClick={onCancelConnection}>取消</button></div> : <div className="canvas-instruction">拖动元件 · 空白处平移 · 滚轮缩放</div>}
+    {connectionMode ? <div className="canvas-connection-notice" role="status">点选物体或其他杆绳的 A / B 端点，连接端点 {connectionMode.end.toUpperCase()}<button onClick={onCancelConnection}>取消</button></div> : <div className="canvas-instruction">拖动元件 · 空白处平移 · 滚轮缩放</div>}
     {snapHint && <div className="canvas-snap-notice" role="status">{snapHint.label} · Alt 临时取消吸附</div>}
   </div>
 }

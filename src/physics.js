@@ -10,9 +10,9 @@ const MAX_CONTACT_ANGLE = 0.005
 
 const finite = (value, fallback = 0) => Number.isFinite(value) ? value : fallback
 const clamp = (value, minimum, maximum) => Math.min(maximum, Math.max(minimum, value))
-const isBody = (object) => ['ball', 'block', 'arc'].includes(object?.type)
+const isBody = (object) => ['ball', 'block', 'arc', 'joint'].includes(object?.type)
 const isFixed = (object) => object?.fixed || (object?.type === 'arc' && !Number.isFinite(object.mass) && object.fixed !== false)
-const mass = (object) => Math.max(0.01, finite(object.mass, object.type === 'arc' ? 5 : 1))
+const mass = (object) => Math.max(object.type === 'joint' ? 0.001 : 0.01, finite(object.mass, object.type === 'arc' ? 5 : object.type === 'joint' ? 0.01 : 1))
 const inverseMass = (object) => isBody(object) && !isFixed(object) ? 1 / mass(object) : 0
 const velocity = (object) => ({ x: isFixed(object) ? 0 : finite(object?.vx), y: isFixed(object) ? 0 : finite(object?.vy) })
 const position = (object) => object.type === 'arc' ? { x: finite(object.cx), y: finite(object.cy) } : { x: finite(object.x), y: finite(object.y) }
@@ -108,6 +108,38 @@ function distanceConstraint(connector, byId) {
   const impulse = relative / weight
   accelerate(bodyA, nx * impulse * wa, ny * impulse * wa)
   accelerate(bodyB, -nx * impulse * wb, -ny * impulse * wb)
+}
+
+function jointConstraintGroup(connectors, bodies) {
+  const ids = new Set(bodies.filter(body => body.type === 'joint').map(body => body.id))
+  const linked = new Set()
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const connector of connectors) {
+      if (connector.type === 'spring' || linked.has(connector) || (!ids.has(connector.bodyA) && !ids.has(connector.bodyB))) continue
+      linked.add(connector)
+      if (connector.bodyA) ids.add(connector.bodyA)
+      if (connector.bodyB) ids.add(connector.bodyB)
+      changed = true
+    }
+  }
+  return [...linked]
+}
+
+function jointConstraintsSettled(connectors, byId) {
+  for (const connector of connectors) {
+    const { distance, nx, ny, bodyA, bodyB } = geometry(connector, byId)
+    if (!inverseMass(bodyA) && !inverseMass(bodyB)) continue
+    const error = distance - connector.length
+    if (connector.type === 'rope' && error < -CONTACT_SLOP) continue
+    if (Math.abs(error) > 0.005) return false
+    const va = velocity(bodyA)
+    const vb = velocity(bodyB)
+    const relative = (vb.x - va.x) * nx + (vb.y - va.y) * ny
+    if (connector.type === 'rope' ? relative > 0.05 : Math.abs(relative) > 0.05) return false
+  }
+  return true
 }
 
 function guideImpulse(ball, bodyA, bodyB, t, nx, ny, impulse) {
@@ -491,7 +523,7 @@ function resolveBoundaryEvent(event, supports) {
 function timestep(bodies, connectors, byId, totalTime) {
   let maximum = 1 / 240
   for (const body of bodies) {
-    if (!inverseMass(body)) continue
+    if (!inverseMass(body) || body.type === 'joint') continue
     const size = body.type === 'ball' ? support(body, 1, 0) : Math.min(support(body, 1, 0), support(body, 0, 1))
     const speed = Math.hypot(body.vx, body.vy)
     if (speed > EPSILON) maximum = Math.min(maximum, size / (speed * 3))
@@ -522,8 +554,9 @@ export function integrate(objects = [], environment = {}, dt = 0) {
   if (!Number.isFinite(dt) || dt <= 0) return next
   const byId = new Map(next.map((object) => [object.id, object]))
   const bodies = next.filter(isBody)
-  const solids = bodies.filter(object => object.type !== 'arc')
+  const solids = bodies.filter(object => object.type === 'ball' || object.type === 'block')
   const connectors = next.filter((object) => ['rod', 'rope', 'spring'].includes(object.type))
+  const jointConstraints = jointConstraintGroup(connectors, bodies)
   const arcs = next.filter((object) => object.type === 'arc')
   const grounds = environment.ground ? next.filter((object) => object.type === 'ground') : []
   const guides = bodies.filter((body) => body.type === 'ball' && body.rodId)
@@ -579,6 +612,12 @@ export function integrate(objects = [], environment = {}, dt = 0) {
     const continuousKeys = new Set(continuous.map(contact => contact.key))
     for (let iteration = 0; iteration < ITERATIONS; iteration += 1) {
       for (const connector of connectors) if (connector.type !== 'spring') distanceConstraint(connector, byId)
+      // 只加密包含轻连接点的约束链，并在满足长度和相对速度误差时提前结束。
+      // 接触、弧槽及无关元件仍使用原来的迭代次数，避免整幅场景反复求解。
+      for (let pass = 0; pass < 128 && jointConstraints.length; pass += 1) {
+        if (pass % 8 === 0 && jointConstraintsSettled(jointConstraints, byId)) break
+        for (const connector of jointConstraints) distanceConstraint(connector, byId)
+      }
       for (const ball of guides) guideConstraint(ball, byId, friction)
       bodyContacts(solids, friction)
       arcBaseContacts(arcs, friction)
@@ -589,7 +628,8 @@ export function integrate(objects = [], environment = {}, dt = 0) {
           arcShellContacts(body, arc, friction)
         }
       }
-      for (const body of bodies) if (inverseMass(body)) for (const ground of grounds) groundContact(body, ground, previous.get(body.id), friction)
+      // 连接点有质量但没有碰撞体积，接触只作用于小球、滑块和槽体。
+      for (const body of bodies) if (body.type !== 'joint' && inverseMass(body)) for (const ground of grounds) groundContact(body, ground, previous.get(body.id), friction)
     }
     remaining -= step
   }
