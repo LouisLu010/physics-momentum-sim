@@ -1,0 +1,116 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import { connectorEndpoints, drawScene, hitObject, viewTransform, WORLD_SIZE } from '../src/canvasDrawing.js'
+
+const ball = { id: 'ball', name: '小球', type: 'ball', x: 100, y: 150, radius: 15, mass: 1, vx: 0, vy: 0 }
+const block = { id: 'block', name: '滑块', type: 'block', x: 300, y: 150, width: 80, height: 40, mass: 2, vx: 0, vy: 0 }
+const rod = { id: 'rod', name: '杆', type: 'rod', bodyA: 'ball', bodyB: '', ax: 0, ay: 0, bx: 300, by: 150, length: 200 }
+
+test('连接器使用物体质心或固定锚点，且不修改输入', () => {
+  const objects = [ball, block, rod]
+  const snapshot = structuredClone(objects)
+  assert.deepEqual(connectorEndpoints(rod, objects), { a: { x: 100, y: 150 }, b: { x: 300, y: 150 } })
+  assert.deepEqual(connectorEndpoints({ ...rod, bodyB: 'block' }, objects), { a: { x: 100, y: 150 }, b: { x: 300, y: 150 } })
+  assert.deepEqual(connectorEndpoints({ ...rod, bodyA: 'removed' }, objects), { a: { x: 0, y: 0 }, b: { x: 300, y: 150 } })
+  assert.deepEqual(objects, snapshot)
+})
+
+test('杆的中段可选中，重叠位置优先命中物体', () => {
+  assert.equal(hitObject([ball, rod], { x: 220, y: 150 }, 1, true)?.id, 'rod')
+  assert.equal(hitObject([ball, rod], { x: 100, y: 150 }, 1, true)?.id, 'ball')
+  assert.equal(hitObject([ball, rod], { x: 220, y: 150 }, 1, true, true), null)
+})
+
+test('滑块按矩形范围命中，画布空白不命中', () => {
+  assert.equal(hitObject([block], { x: 339, y: 169 }, 1, true)?.id, 'block')
+  assert.equal(hitObject([block], { x: 300, y: 190 }, 1, true), null)
+  assert.equal(hitObject([], { x: 100, y: 100 }, 1, true), null)
+})
+
+test('弧形槽只在真实扫角内命中，并处理跨越零度的弧段', () => {
+  const arc = { id: 'arc', type: 'arc', cx: 300, cy: 300, radius: 100, startAngle: 0, angle: 180 }
+  assert.equal(hitObject([arc], { x: 300, y: 400 }, 1, true)?.id, 'arc')
+  assert.equal(hitObject([arc], { x: 300, y: 200 }, 1, true), null)
+  assert.equal(hitObject([arc], { x: 300, y: 300 }, 1, true)?.id, 'arc')
+  const wrapped = { ...arc, startAngle: 300, angle: 120 }
+  assert.equal(hitObject([wrapped], { x: 400, y: 300 }, 1, true)?.id, 'arc')
+  assert.equal(hitObject([wrapped], { x: 200, y: 300 }, 1, true), null)
+})
+
+test('关闭的地面和有限地面外部不可选中', () => {
+  const ground = { id: 'floor', type: 'ground', x: 100, y: 500, width: 300 }
+  assert.equal(hitObject([ground], { x: 220, y: 500 }, 1, true)?.id, 'floor')
+  assert.equal(hitObject([ground], { x: 220, y: 500 }, 1, false), null)
+  assert.equal(hitObject([ground], { x: 470, y: 500 }, 1, true), null)
+})
+
+test('松绳的下垂部分和弹簧中段可选中', () => {
+  const rope = { ...rod, id: 'rope', type: 'rope', bodyA: '', ax: 100, ay: 100, bx: 200, by: 100, length: 200 }
+  assert.equal(hitObject([rope], { x: 150, y: 143.3 }, 1, true)?.id, 'rope')
+  const spring = { ...rod, id: 'spring', type: 'spring' }
+  assert.equal(hitObject([ball, spring], { x: 220, y: 150 }, 1, true)?.id, 'spring')
+})
+
+test('点击容差随着缩放保持屏幕尺寸一致', () => {
+  const point = { x: ball.x + ball.radius + 12, y: ball.y }
+  assert.equal(hitObject([ball], point, 1, true), null)
+  assert.equal(hitObject([ball], point, 0.5, true)?.id, 'ball')
+})
+
+test('画布采用等比缩放、居中留白并叠加平移', () => {
+  assert.deepEqual(viewTransform(WORLD_SIZE, { zoom: 1, x: 0, y: 0 }), { scale: 1, x: 0, y: 0 })
+  assert.deepEqual(viewTransform({ width: 450, height: 310 }, { zoom: 1, x: 0, y: 0 }), { scale: 0.5, x: 0, y: 0 })
+  assert.deepEqual(viewTransform({ width: 900, height: 900 }, { zoom: 1, x: 10, y: -20 }), { scale: 1, x: 10, y: 120 })
+  assert.deepEqual(viewTransform(WORLD_SIZE, { zoom: 2, x: 15, y: 10 }), { scale: 2, x: -435, y: -300 })
+})
+
+function recordingCanvas() {
+  const calls = []
+  const context = {}
+  for (const name of ['setTransform', 'clearRect', 'fillRect', 'translate', 'scale', 'beginPath', 'moveTo', 'lineTo', 'stroke', 'fill', 'arc', 'save', 'restore', 'setLineDash', 'strokeText', 'fillText', 'roundRect', 'quadraticCurveTo']) {
+    context[name] = (...args) => calls.push({ name, args })
+  }
+  return { width: 900, height: 620, getContext: () => context, calls }
+}
+
+const drawingOptions = { size: WORLD_SIZE, view: { zoom: 1, x: 0, y: 0 }, objects: [], groundEnabled: true, selectedId: null, connectionMode: null }
+
+test('没有绘图上下文或画布尺寸为零时安全退出', () => {
+  assert.doesNotThrow(() => drawScene({ getContext: () => null }, drawingOptions))
+  const canvas = recordingCanvas()
+  drawScene(canvas, { ...drawingOptions, size: { width: 0, height: 0 } })
+  assert.equal(canvas.calls.length, 0)
+})
+
+test('绘图保留小球圆形几何，并清理前一帧而不改写物理对象', () => {
+  const canvas = recordingCanvas()
+  const objects = [{ ...ball, vx: 150, fixed: true }, block]
+  const snapshot = structuredClone(objects)
+  drawScene(canvas, { ...drawingOptions, objects, selectedId: 'ball' })
+  assert.deepEqual(objects, snapshot)
+  assert.ok(canvas.calls.some(call => call.name === 'clearRect'))
+  assert.ok(canvas.calls.some(call => call.name === 'arc' && call.args[0] === ball.x && call.args[1] === ball.y && call.args[2] === ball.radius))
+  assert.ok(canvas.calls.some(call => call.name === 'roundRect'))
+  assert.ok(canvas.calls.some(call => call.name === 'fillText' && call.args[0] === '固定'))
+})
+
+test('各种元件与选中状态可绘制，尺寸标注使用米', () => {
+  const objects = [ball, block, rod, { ...rod, id: 'rope', type: 'rope', bodyA: '', ax: 150, ay: 100 }, { ...rod, id: 'spring', type: 'spring', bodyB: 'block' }, { id: 'arc', type: 'arc', cx: 450, cy: 250, radius: 180, startAngle: 0, angle: 180 }, { id: 'floor', type: 'ground', x: 70, y: 535, width: 760 }]
+  for (const object of objects) {
+    const canvas = recordingCanvas()
+    assert.doesNotThrow(() => drawScene(canvas, { ...drawingOptions, objects, selectedId: object.id, connectionMode: object.type === 'rod' ? { id: object.id, end: 'a' } : null }))
+    assert.ok(canvas.calls.some(call => call.name === 'stroke'))
+    if (object.type === 'arc') assert.ok(canvas.calls.some(call => call.name === 'fillText' && call.args[0].includes('1.80 m')))
+  }
+})
+
+test('关闭地面后不再绘制地面的斜线标记', () => {
+  const objects = [{ id: 'floor', type: 'ground', x: 77, y: 531, width: 300 }]
+  const enabled = recordingCanvas()
+  const disabled = recordingCanvas()
+  drawScene(enabled, { ...drawingOptions, objects })
+  drawScene(disabled, { ...drawingOptions, objects, groundEnabled: false })
+  const groundStart = call => call.name === 'moveTo' && call.args[0] === 77 && call.args[1] === 531
+  assert.ok(enabled.calls.some(groundStart))
+  assert.ok(!disabled.calls.some(groundStart))
+})
