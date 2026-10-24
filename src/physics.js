@@ -5,6 +5,8 @@ const SCALE = 100
 const EPSILON = 1e-9
 const CONTACT_SLOP = 0.002
 const ITERATIONS = 10
+const CONTACT_TOLERANCE = CONTACT_SLOP * 4
+const MAX_CONTACT_ANGLE = 0.005
 
 const finite = (value, fallback = 0) => Number.isFinite(value) ? value : fallback
 const clamp = (value, minimum, maximum) => Math.min(maximum, Math.max(minimum, value))
@@ -162,14 +164,15 @@ function guideConstraint(ball, byId, friction) {
   }
 }
 
-function contactImpulse(a, b, nx, ny, penetration, friction, contactRestitution) {
+function contactImpulse(a, b, nx, ny, penetration, friction, contactRestitution, verticalSupport = false) {
   const wa = inverseMass(a)
   const wb = inverseMass(b)
-  const weight = wa + wb
+  const wy = verticalSupport ? 0 : wb
+  const weight = wa + wb * nx * nx + wy * ny * ny
   if (!weight) return
   const correction = Math.max(0, penetration - CONTACT_SLOP) / weight
   translate(a, -nx * correction * wa, -ny * correction * wa)
-  translate(b, nx * correction * wb, ny * correction * wb)
+  translate(b, nx * correction * wb, ny * correction * wy)
   const va = velocity(a)
   const vb = velocity(b)
   const relativeNormal = (vb.x - va.x) * nx + (vb.y - va.y) * ny
@@ -179,14 +182,16 @@ function contactImpulse(a, b, nx, ny, penetration, friction, contactRestitution)
   const effectiveRestitution = !b && restitution < 1 && relativeNormal >= -15 ? 0 : restitution
   const impulse = -(1 + effectiveRestitution) * relativeNormal / weight
   accelerate(a, -nx * impulse * wa, -ny * impulse * wa)
-  accelerate(b, nx * impulse * wb, ny * impulse * wb)
+  accelerate(b, nx * impulse * wb, ny * impulse * wy)
   if (!friction) return
   const tx = -ny
   const ty = nx
   const tangentVelocity = (vb.x - va.x) * tx + (vb.y - va.y) * ty
-  const tangentImpulse = clamp(-tangentVelocity / weight, -friction * impulse, friction * impulse)
+  const tangentWeight = wa + wb * tx * tx + wy * ty * ty
+  if (!tangentWeight) return
+  const tangentImpulse = clamp(-tangentVelocity / tangentWeight, -friction * impulse, friction * impulse)
   accelerate(a, -tx * tangentImpulse * wa, -ty * tangentImpulse * wa)
-  accelerate(b, tx * tangentImpulse * wb, ty * tangentImpulse * wb)
+  accelerate(b, tx * tangentImpulse * wb, ty * tangentImpulse * wy)
 }
 
 function ballBall(a, b, friction) {
@@ -268,7 +273,7 @@ function withinArc(degrees, start, sweep) {
   return delta <= Math.max(0, sweep) + 1e-7 || sweep >= 360
 }
 
-function arcContact(body, arc, previous, previousArc, friction) {
+function arcContact(body, arc, previous, previousArc, friction, continuous = false, supported = false) {
   const radius = Math.max(1, finite(arc.radius, 160))
   const dx = body.x - arc.cx
   const dy = body.y - arc.cy
@@ -286,7 +291,8 @@ function arcContact(body, arc, previous, previousArc, friction) {
     const extent = support(body, radialX, radialY) + 3
     const penetration = extent - side * signed
     if (penetration < 0) return
-    contactImpulse(body, arc, -side * radialX, -side * radialY, penetration, friction, clamp(finite(body.restitution, 0.7), 0, 1))
+    const restitution = continuous && side < 0 ? 0 : clamp(finite(body.restitution, 0.7), 0, 1)
+    contactImpulse(body, arc, -side * radialX, -side * radialY, penetration, friction, restitution, supported && -side * radialY >= 0 && arc.vy >= 0)
     return
   }
   // 开放弧槽的两个端点也有碰撞，避免从端部穿过。
@@ -300,7 +306,7 @@ function arcContact(body, arc, previous, previousArc, friction) {
     const nx = pointDistance > EPSILON ? pointX / pointDistance : 0
     const ny = pointDistance > EPSILON ? pointY / pointDistance : 1
     const extent = support(body, nx, ny) + 3
-    if (pointDistance <= extent) contactImpulse(body, arc, nx, ny, extent - pointDistance, friction, clamp(finite(body.restitution, 0.7), 0, 1))
+    if (pointDistance <= extent) contactImpulse(body, arc, nx, ny, extent - pointDistance, friction, clamp(finite(body.restitution, 0.7), 0, 1), supported && ny >= 0 && arc.vy >= 0)
   }
 }
 
@@ -372,6 +378,116 @@ function arcBaseContacts(arcs, friction) {
   }
 }
 
+function pairKey(body, arc) {
+  return JSON.stringify([body.id, arc.id])
+}
+
+function continuousInnerContacts(solids, arcs) {
+  const result = []
+  for (const body of solids) {
+    if (body.type !== 'ball' || body.rodId) continue
+    for (const arc of arcs) {
+      const radius = arc.radius - body.radius - 3
+      if (radius <= 0 || (!inverseMass(body) && !inverseMass(arc))) continue
+      const dx = body.x - arc.cx
+      const dy = body.y - arc.cy
+      const distance = Math.hypot(dx, dy)
+      const angle = Math.atan2(dy, dx) * 180 / Math.PI
+      if (!withinArc(angle, arc.startAngle, arc.angle) || Math.abs(distance - radius) > CONTACT_TOLERANCE) continue
+      const nx = dx / distance
+      const ny = dy / distance
+      const relativeX = body.vx - arc.vx
+      const relativeY = body.vy - arc.vy
+      const normal = relativeX * nx + relativeY * ny
+      // 几何误差引起的法向方向误差约为 slop / R；此界限不随碰撞恢复系数放大。
+      const tolerance = CONTACT_TOLERANCE * Math.max(1, Math.hypot(relativeX, relativeY)) / radius
+      const key = pairKey(body, arc)
+      if (Math.abs(normal) > tolerance) continue
+      const tangent = -relativeX * ny + relativeY * nx
+      const progress = ((angle - arc.startAngle) % 360 + 360) % 360
+      if ((progress < 1e-7 && tangent < 0) || (Math.abs(progress - arc.angle) < 1e-7 && tangent > 0)) continue
+      result.push({ body, arc, radius, nx, ny, tangent, key })
+    }
+  }
+  return result
+}
+
+function supportedArcs(arcs, grounds) {
+  return new Set(arcs.filter(arc => {
+    if (isFixed(arc) || arc.vy < 0) return false
+    const base = arcBase(arc)
+    return grounds.some(ground => Math.abs(base.bottom - ground.y) <= CONTACT_TOLERANCE && base.right > Math.min(ground.x, ground.x + ground.width) && base.left < Math.max(ground.x, ground.x + ground.width))
+  }).map(arc => arc.id))
+}
+
+function boundaryEvent(solids, arcs, activeContacts, oldVelocity, acceleration, step) {
+  const active = new Map(activeContacts.map(contact => [contact.key, contact]))
+  let earliest = null
+  for (const body of solids) {
+    if (body.type !== 'ball' || body.rodId) continue
+    for (const arc of arcs) {
+      const radius = arc.radius - body.radius - 3
+      if (radius <= 0 || (!inverseMass(body) && !inverseMass(arc))) continue
+      const contact = active.get(pairKey(body, arc))
+      const x = body.x - arc.cx
+      const y = body.y - arc.cy
+      const bv = oldVelocity.get(body.id)
+      const av = oldVelocity.get(arc.id)
+      const ba = acceleration.get(body.id)
+      const aa = acceleration.get(arc.id)
+      const vx = bv.x - av.x
+      const vy = bv.y - av.y
+      const ax = ba.x - aa.x
+      const ay = ba.y - aa.y
+      for (const [degrees, direction] of [[arc.startAngle, -1], [arc.startAngle + arc.angle, 1]]) {
+        const radians = degrees * Math.PI / 180
+        const nx = Math.cos(radians)
+        const ny = Math.sin(radians)
+        const tangentPosition = -x * ny + y * nx
+        const tangentVelocity = -vx * ny + vy * nx
+        const tangentAcceleration = -ax * ny + ay * nx
+        const endPosition = tangentPosition + tangentVelocity * step + tangentAcceleration * step * step
+        const exiting = contact && tangentPosition * direction < -EPSILON && endPosition * direction >= 0
+        const entering = !contact && tangentPosition * direction > EPSILON && endPosition * direction <= 0
+        if ((!exiting && !entering) || x * nx + y * ny <= 0) continue
+        let low = 0
+        let high = step
+        // 与半隐式积分使用同一条预测轨迹，定位越过弧端的时刻。
+        for (let iteration = 0; iteration < 32; iteration += 1) {
+          const middle = (low + high) / 2
+          const position = tangentPosition + tangentVelocity * middle + tangentAcceleration * middle * middle
+          if ((position * direction < 0) === Boolean(exiting)) low = middle
+          else high = middle
+        }
+        const time = (low + high) / 2
+        const radialPosition = (x + vx * time + ax * time * time) * nx + (y + vy * time + ay * time * time) * ny
+        const normalVelocity = (vx + ax * time) * nx + (vy + ay * time) * ny
+        if (entering && (Math.abs(radialPosition - radius) > CONTACT_TOLERANCE || Math.abs(normalVelocity) > 1e-7 * Math.max(1, Math.hypot(vx, vy)))) continue
+        if (time > EPSILON && (!earliest || time < earliest.time)) earliest = { body, arc, radius, nx, ny, time, entering }
+      }
+    }
+  }
+  return earliest
+}
+
+function resolveBoundaryEvent(event, supports) {
+  const { body, arc, radius, nx, ny } = event
+  const wa = inverseMass(body)
+  const wb = inverseMass(arc)
+  const wy = supports.has(arc.id) && arc.vy >= 0 ? 0 : wb
+  // 仅已贴轨离口或精确擦边进入的事件使用端点约束；普通端帽碰撞不走这里。
+  const errorX = body.x - arc.cx - radius * nx
+  const errorY = body.y - arc.cy - radius * ny
+  if (wa + wb) { translate(body, -errorX * wa / (wa + wb), 0); translate(arc, errorX * wb / (wa + wb), 0) }
+  if (wa + wy) { translate(body, 0, -errorY * wa / (wa + wy)); translate(arc, 0, errorY * wy / (wa + wy)) }
+  const weight = wa + wb * nx * nx + wy * ny * ny
+  if (!weight) return
+  const relativeNormal = (body.vx - arc.vx) * nx + (body.vy - arc.vy) * ny
+  const impulse = relativeNormal / weight
+  accelerate(body, -nx * impulse * wa, -ny * impulse * wa)
+  accelerate(arc, nx * impulse * wb, ny * impulse * wy)
+}
+
 function timestep(bodies, connectors, byId, totalTime) {
   let maximum = 1 / 240
   for (const body of bodies) {
@@ -387,6 +503,15 @@ function timestep(bodies, connectors, byId, totalTime) {
     const damping = Math.max(0, finite(connector.damping))
     if (effectiveWeight * stiffness > EPSILON) maximum = Math.min(maximum, 0.15 / Math.sqrt(stiffness * effectiveWeight))
     if (effectiveWeight * damping > EPSILON) maximum = Math.min(maximum, 0.25 / (damping * effectiveWeight))
+  }
+  for (const body of bodies) {
+    if (body.type !== 'ball') continue
+    for (const arc of bodies.filter(candidate => candidate.type === 'arc')) {
+      const radius = arc.radius - body.radius - 3
+      if (radius <= 0 || Math.abs(Math.hypot(body.x - arc.cx, body.y - arc.cy) - radius) > CONTACT_TOLERANCE) continue
+      const speed = Math.hypot(body.vx - arc.vx, body.vy - arc.vy)
+      if (speed > EPSILON) maximum = Math.min(maximum, MAX_CONTACT_ANGLE * radius / speed)
+    }
   }
   return Math.min(totalTime, Math.max(1 / 20000, maximum))
 }
@@ -413,14 +538,45 @@ export function integrate(objects = [], environment = {}, dt = 0) {
   // 过长帧间隔由调用方拆分；此上限避免休眠恢复后执行无界积分。
   let remaining = Math.min(dt, 0.25)
   while (remaining > EPSILON) {
-    const step = timestep(bodies, connectors, byId, remaining)
+    let step = timestep(bodies, connectors, byId, remaining)
     const previous = new Map(bodies.map((body) => [body.id, position(body)]))
+    const oldVelocity = new Map(bodies.map(body => [body.id, velocity(body)]))
+    let continuous = continuousInnerContacts(solids, arcs)
+    // 光滑地面可将向下支持约束合并到接触有效质量，避免逐次抵消时人为耗能。
+    // 粗糙地面仍保留完整冲量路径，让槽受到的下压力参与库仑摩擦。
+    const supports = friction ? new Set() : supportedArcs(arcs, grounds)
     springForces(connectors, byId, step)
     for (const body of bodies) {
       if (!inverseMass(body)) continue
       body.vy += gravity * step
-      translate(body, body.vx * step, body.vy * step)
+      if (supports.has(body.id)) {
+        if (body.vy >= 0) body.vy = 0
+        else supports.delete(body.id)
+      }
     }
+    const acceleration = new Map(bodies.map(body => {
+      const old = oldVelocity.get(body.id)
+      return [body.id, { x: (body.vx - old.x) / step, y: (body.vy - old.y) / step }]
+    }))
+    // 单侧轨道只能推不能拉：外力使物体离开内壁时，立即释放持续接触。
+    continuous = continuous.filter(contact => {
+      const ba = acceleration.get(contact.body.id)
+      const aa = acceleration.get(contact.arc.id)
+      return contact.tangent * contact.tangent / contact.radius + (ba.x - aa.x) * contact.nx + (ba.y - aa.y) * contact.ny >= -EPSILON
+    })
+    const event = boundaryEvent(solids, arcs, continuous, oldVelocity, acceleration, step)
+    if (event) {
+      step = event.time
+      for (const body of bodies) {
+        const old = oldVelocity.get(body.id)
+        const change = acceleration.get(body.id)
+        body.vx = old.x + change.x * step
+        body.vy = old.y + change.y * step
+      }
+    }
+    for (const body of bodies) translate(body, body.vx * step, body.vy * step)
+    if (event) resolveBoundaryEvent(event, supports)
+    const continuousKeys = new Set(continuous.map(contact => contact.key))
     for (let iteration = 0; iteration < ITERATIONS; iteration += 1) {
       for (const connector of connectors) if (connector.type !== 'spring') distanceConstraint(connector, byId)
       for (const ball of guides) guideConstraint(ball, byId, friction)
@@ -429,7 +585,7 @@ export function integrate(objects = [], environment = {}, dt = 0) {
       for (const body of solids) {
         for (const arc of arcs) {
           if (!inverseMass(body) && !inverseMass(arc)) continue
-          arcContact(body, arc, previous.get(body.id), previous.get(arc.id), friction)
+          arcContact(body, arc, previous.get(body.id), previous.get(arc.id), friction, continuousKeys.has(pairKey(body, arc)), supports.has(arc.id))
           arcShellContacts(body, arc, friction)
         }
       }

@@ -529,3 +529,66 @@ test('上方切线对齐支持 Alt 禁用，槽口下方不沿切线吸附', asy
   expect(Math.abs(result.x - below.x)).toBeLessThan(2)
   expect(Math.abs(result.y - below.y)).toBeLessThan(2)
 })
+
+test('小球从左切线上方落入、由右口飞出后可原路回槽', async ({ page }) => {
+  const innerRadius = 180 - 19 - 3
+  const scene = {
+    version: 1,
+    name: '切线离槽与回落',
+    gravity: true,
+    gravityValue: 9.8,
+    ground: true,
+    friction: false,
+    frictionValue: 0.2,
+    trails: false,
+    objects: [
+      { id: 'return-arc', type: 'arc', name: '回落弧槽', cx: 365, cy: 331, radius: 180, startAngle: 0, angle: 180, mass: 5, vx: 0, vy: 0, restitution: 0, fixed: false },
+      { id: 'return-ball', type: 'ball', name: '回落小球', x: 365 - innerRadius, y: 81, radius: 19, mass: 1, vx: 0, vy: 0, restitution: 1, fixed: false, rodId: '' },
+      { id: 'return-ground', type: 'ground', name: '长地面', x: -1000, y: 535, width: 3000 },
+    ],
+  }
+  await page.getByLabel('选择场景文件').setInputFiles({ name: 'return-experiment.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(scene)) })
+  await expect(page.locator('.toast')).toContainText('场景已导入。')
+  await page.getByRole('combobox', { name: '模拟速度' }).selectOption('2')
+
+  const runTo = async seconds => {
+    await page.getByRole('button', { name: '运行模拟' }).click()
+    // 在同一浏览器帧读取时间并点击公开暂停按钮，避免跨进程等待错过回槽窗口。
+    await page.waitForFunction(target => {
+      const time = Number(document.querySelector('[aria-label="模拟时间"]').textContent.match(/[\d.]+/)[0])
+      if (time < target) return false
+      document.querySelector('button[aria-label="暂停模拟"]').click()
+      return true
+    }, seconds, { timeout: 7000, polling: 'raf' })
+    await expect(page.getByRole('button', { name: '运行模拟' })).toBeVisible()
+  }
+  const motion = async name => {
+    await page.locator('.scene-item').filter({ hasText: name }).click()
+    return {
+      x: Number(await numberField(page, '位置 X').inputValue()) * 100,
+      y: Number(await numberField(page, '位置 Y').inputValue()) * 100,
+      vx: Number(await numberField(page, '水平速度').inputValue()) * 100,
+    }
+  }
+
+  await runTo(1.6)
+  const firstBall = await motion('回落小球')
+  const firstArc = await motion('回落弧槽')
+  expect(firstBall.y).toBeLessThan(firstArc.y - 20)
+  expect(Math.abs(firstBall.vx - firstArc.vx)).toBeLessThan(0.5)
+  expect(Math.abs(firstBall.x - firstArc.x - innerRadius)).toBeLessThan(0.5)
+
+  await runTo(2.1)
+  const secondBall = await motion('回落小球')
+  const secondArc = await motion('回落弧槽')
+  expect(secondBall.y).toBeLessThan(secondArc.y - 20)
+  expect(Math.abs(secondBall.vx - secondArc.vx)).toBeLessThan(0.5)
+  expect(Math.abs((secondBall.x - secondArc.x) - (firstBall.x - firstArc.x))).toBeLessThan(0.5)
+
+  await runTo(2.95)
+  const returnedBall = await motion('回落小球')
+  const returnedArc = await motion('回落弧槽')
+  expect(returnedBall.y).toBeGreaterThan(returnedArc.y + 5)
+  expect(Math.hypot(returnedBall.x - returnedArc.x, returnedBall.y - returnedArc.y)).toBeLessThanOrEqual(innerRadius + 1)
+  expect(Number.parseFloat(await page.getByTestId('momentum-x').textContent())).toBeCloseTo(0, 2)
+})
