@@ -45,7 +45,7 @@ function HelpDialog({ onClose }) {
     <div className="dialog-heading"><h2>从一张草图开始</h2><button aria-label="关闭使用说明" className="icon-button" onClick={onClose}><Icon name="close" /></button></div>
     <ol><li>拖入或点击添加元件。在画布上拖动，选中后在检查器中改参数。</li><li>添加杆、绳或弹簧，分别设置端点 A、B；未连接的端点固定在空间中。</li><li>选中小球，在“杆上滑动”中选择杆，小球便成为可滑动的套环。</li><li>开启或关闭地面、重力与摩擦，设置初速度，然后点击运行。空格可暂停。</li><li>重置恢复到本次运行前的布局；修改参数会暂停模拟，并将当前位置作为新起点。</li></ol>
     <p>画布坐标向右、向下为正，100 px 对应 1 m。无外力时，系统总动量守恒；固定锚点、地面和固定槽可向系统施加外力。</p>
-    <p>拖动小球靠近槽的竖直切点、或拖动槽底靠近地面时会自动吸附。按住 Alt 可暂时关闭吸附；吸附仅用于摆放，不会锁住运行中的物体。</p>
+    <p>小球在槽上方时，靠近竖直切线会水平对齐并保持高度；靠近槽口则吸附到切点。槽底靠近地面也会自动贴合。按住 Alt 可暂时关闭吸附；吸附仅用于摆放，不会锁住运行中的物体。</p>
     <p className="model-note">二维教学模型：滑块与槽体不旋转，杆、绳、弹簧无质量。槽体可滑动或固定，动量读数包含槽体。滑块与弧槽接触使用支撑半径近似；数值积分存在小量误差。</p>
     <button className="button button-primary" onClick={onClose}>开始实验</button>
   </dialog>

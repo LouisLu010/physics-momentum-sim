@@ -7,16 +7,25 @@ export function snapObject(object, objects, { groundEnabled = true, scale = 1, d
   const displayScale = Number.isFinite(scale) && scale > 0 ? scale : 1
   const tolerance = SNAP_DISTANCE / displayScale
   if (object.type === 'ball' && !object.rodId) {
-    let best = null
+    let bestPoint = null
+    let bestLine = null
     for (const arc of objects.filter(candidate => candidate.type === 'arc')) {
       for (const point of verticalTangentCenters(arc, object.radius)) {
         const distance = Math.hypot(object.x - point.x, object.y - point.y)
-        if (distance <= tolerance && (!best || distance < best.distance)) best = { point, distance }
+        if (distance <= tolerance && (!bestPoint || distance < bestPoint.distance)) bestPoint = { point, distance }
+        const horizontalDistance = Math.abs(object.x - point.x)
+        const aboveHeight = point.y - object.y
+        if (aboveHeight > 0 && horizontalDistance <= tolerance && (!bestLine || horizontalDistance < bestLine.distance || (horizontalDistance === bestLine.distance && aboveHeight < bestLine.aboveHeight))) {
+          bestLine = { point, distance: horizontalDistance, aboveHeight }
+        }
       }
     }
+    // 槽口附近优先对齐切点；上方则只对齐水平方向，保留释放高度。
+    const best = bestPoint || bestLine
     if (best) {
       const { point } = best
-      return { object: { ...object, x: point.x, y: point.y }, hint: { kind: 'ball-arc', point: { x: point.contactX, y: point.y }, line: { x1: point.contactX, y1: point.y - object.radius - 25 / displayScale, x2: point.contactX, y2: point.y + object.radius + 25 / displayScale }, label: '小球已对齐竖直切点' } }
+      const y = bestPoint ? point.y : object.y
+      return { object: { ...object, x: point.x, y }, hint: { kind: 'ball-arc', point: { x: point.contactX, y: point.y }, line: { x1: point.contactX, y1: Math.min(y, point.y) - object.radius - 25 / displayScale, x2: point.contactX, y2: point.y + object.radius + 25 / displayScale }, label: bestPoint ? '小球已对齐竖直切点' : '小球已对齐竖直切线' } }
     }
   }
   if (object.type === 'arc' && groundEnabled) {

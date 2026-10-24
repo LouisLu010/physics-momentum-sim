@@ -462,3 +462,70 @@ test('可动槽参与动量交换，固定开关和连接端点均可用', async
   expect(Number(await numberField(page, 'A 位置 X').inputValue())).toBeCloseTo(initialX, 4)
   expect(Number(await numberField(page, 'A 位置 Y').inputValue())).toBeCloseTo(2.86, 4)
 })
+
+test('槽口上方的小球可对齐左右竖直切线，保留高度且可拖离', async ({ page }) => {
+  await preset(page, 'arc')
+  await page.locator('.scene-item').filter({ hasText: '小球 A' }).click()
+  await editNumber(page, '位置 X', 4.3)
+  await editNumber(page, '位置 Y', 1.1)
+  const initial = await exportScene(page)
+  const arc = initial.objects.find(object => object.type === 'arc')
+  const ball = initial.objects.find(object => object.id === 'ball-a')
+  const leftX = arc.cx - arc.radius + ball.radius + 3
+  const height = arc.cy - 100
+
+  await dragStart(page, ball)
+  await dragMove(page, { x: leftX + 5, y: height })
+  await expect(page.locator('.canvas-snap-notice')).toContainText('小球已对齐竖直切线')
+  expect(Number(await numberField(page, '位置 X').inputValue()) * 100).toBeCloseTo(leftX, 2)
+  expect(Math.abs(Number(await numberField(page, '位置 Y').inputValue()) * 100 - height)).toBeLessThan(2)
+
+  const detached = { x: leftX + 70, y: height - 25 }
+  await dragMove(page, detached)
+  await expect(page.locator('.canvas-snap-notice')).toHaveCount(0)
+  await page.mouse.up()
+  const moved = (await exportScene(page)).objects.find(object => object.id === ball.id)
+  expect(Math.abs(moved.x - detached.x)).toBeLessThan(2)
+  expect(Math.abs(moved.y - detached.y)).toBeLessThan(2)
+
+  const rightX = arc.cx + arc.radius - ball.radius - 3
+  await dragStart(page, moved)
+  await dragMove(page, { x: rightX - 5, y: height - 20 })
+  await expect(page.locator('.canvas-snap-notice')).toContainText('小球已对齐竖直切线')
+  await page.mouse.up()
+  await expect(page.locator('.canvas-snap-notice')).toHaveCount(0)
+  const aligned = (await exportScene(page)).objects.find(object => object.id === ball.id)
+  expect(aligned.x).toBeCloseTo(rightX, 3)
+  expect(Math.abs(aligned.y - (height - 20))).toBeLessThan(2)
+})
+
+test('上方切线对齐支持 Alt 禁用，槽口下方不沿切线吸附', async ({ page }) => {
+  await preset(page, 'arc')
+  await page.locator('.scene-item').filter({ hasText: '小球 A' }).click()
+  await editNumber(page, '位置 X', 4.3)
+  await editNumber(page, '位置 Y', 1.1)
+  const initial = await exportScene(page)
+  const arc = initial.objects.find(object => object.type === 'arc')
+  const ball = initial.objects.find(object => object.id === 'ball-a')
+  const leftX = arc.cx - arc.radius + ball.radius + 3
+  const bypassed = { x: leftX + 8, y: arc.cy - 100 }
+
+  await dragStart(page, ball)
+  await page.keyboard.down('Alt')
+  await dragMove(page, bypassed)
+  await expect(page.locator('.canvas-snap-notice')).toHaveCount(0)
+  await page.mouse.up()
+  await page.keyboard.up('Alt')
+  const moved = (await exportScene(page)).objects.find(object => object.id === ball.id)
+  expect(Math.abs(moved.x - bypassed.x)).toBeLessThan(2)
+  expect(Math.abs(moved.y - bypassed.y)).toBeLessThan(2)
+
+  const below = { x: leftX + 5, y: arc.cy + 100 }
+  await dragStart(page, moved)
+  await dragMove(page, below)
+  await expect(page.locator('.canvas-snap-notice')).toHaveCount(0)
+  await page.mouse.up()
+  const result = (await exportScene(page)).objects.find(object => object.id === ball.id)
+  expect(Math.abs(result.x - below.x)).toBeLessThan(2)
+  expect(Math.abs(result.y - below.y)).toBeLessThan(2)
+})

@@ -97,3 +97,44 @@ test('default experiment starts with flat base on floor and ball at the inner ta
   assert.equal(bead.y, trough.cy)
   assert.equal(trough.fixed, false)
 })
+
+test('balls above either rim align to the vertical tangent without losing release height', () => {
+  for (const [x, aligned] of [[150, 143], [450, 457]]) {
+    const above = { ...ball, x, y: 50 }
+    const result = snapObject(above, [arc])
+    assert.equal(result.object.x, aligned)
+    assert.equal(result.object.y, 50)
+    assert.equal(result.hint.label, '小球已对齐竖直切线')
+    assert.ok(result.hint.line.y1 < above.y)
+    assert.ok(result.hint.line.y2 > arc.cy)
+    assert.equal(above.x, x)
+  }
+})
+
+test('vertical alignment has a horizontal distance limit, respects zoom and can be bypassed', () => {
+  const above = { ...ball, x: 143 + 12, y: -300 }
+  assert.ok(snapObject(above, [arc]).hint)
+  assert.equal(snapObject(above, [arc], { scale: 2 }).hint, null)
+  assert.equal(snapObject(above, [arc], { disabled: true }).hint, null)
+  assert.equal(snapObject({ ...above, x: 143 + 15 }, [arc]).hint, null)
+  assert.equal(snapObject({ ...above, x: 143, y: 230 }, [arc]).hint, null)
+})
+
+test('nearby tangent points take precedence over vertical extensions of other tracks', () => {
+  const second = { ...arc, id: 'lower', cy: 600, cx: 305 }
+  const result = snapObject({ ...ball, x: 148, y: 195 }, [second, arc])
+  assert.equal(result.object.x, 143)
+  assert.equal(result.object.y, 200)
+  assert.equal(result.hint.label, '小球已对齐竖直切点')
+})
+
+test('upper alignment chooses the closest horizontal line and then the nearest rim below it', () => {
+  const lower = { ...arc, id: 'lower', cy: 500 }
+  const near = { ...arc, id: 'near', cx: 307 }
+  const above = { ...ball, x: 150, y: 50 }
+  const aligned = snapObject(above, [arc, near])
+  assert.equal(aligned.object.x, 150)
+  const closestRim = snapObject(above, [lower, arc])
+  assert.equal(closestRim.hint.point.y, 200)
+  assert.equal(closestRim.object.y, 50)
+})
