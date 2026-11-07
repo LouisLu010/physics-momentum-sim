@@ -156,6 +156,30 @@ test('吸附目标和对齐线使用场景坐标，在缩放后仍保持清晰',
   assert.ok(canvas.calls.some(call => call.name === 'arc' && call.args[0] === 330 && call.args[1] === 535 && call.args[2] * 2 === 5))
 })
 
+test('双轴吸附同时绘制两条缩放一致的辅助线，且不修改提示', () => {
+  const canvas = recordingCanvas()
+  const snapHint = {
+    kind: 'object-alignment',
+    point: { x: 330, y: 420 },
+    lines: [{ x1: 330, y1: 210, x2: 330, y2: 535 }, { x1: 110, y1: 420, x2: 600, y2: 420 }],
+    label: '元件已对齐',
+  }
+  const snapshot = structuredClone(snapHint)
+  drawScene(canvas, { ...drawingOptions, view: { zoom: 2, x: 30, y: 20 }, snapHint })
+  const start = canvas.calls.findIndex(call => call.name === 'setLineDash' && call.args[0][0] === 2.5 && call.args[0][1] === 2)
+  assert.ok(start >= 0)
+  const reset = canvas.calls.findIndex((call, index) => index > start && call.name === 'setLineDash' && call.args[0].length === 0)
+  assert.ok(reset > start)
+  assert.deepEqual(canvas.calls.slice(start + 1, reset).filter(call => call.name === 'moveTo' || call.name === 'lineTo'), [
+    { name: 'moveTo', args: [330, 210] },
+    { name: 'lineTo', args: [330, 535] },
+    { name: 'moveTo', args: [110, 420] },
+    { name: 'lineTo', args: [600, 420] },
+  ])
+  assert.ok(canvas.calls.some(call => call.name === 'arc' && call.args[0] === 330 && call.args[1] === 420 && call.args[2] === 2.5))
+  assert.deepEqual(snapHint, snapshot)
+})
+
 test('关闭地面后不再绘制地面的斜线标记', () => {
   const objects = [{ id: 'floor', type: 'ground', x: 77, y: 531, width: 300 }]
   const enabled = recordingCanvas()

@@ -449,9 +449,10 @@ function drawSnapHint(context, hint, scale) {
   context.strokeStyle = '#4d8765'
   context.fillStyle = '#f3faf1'
   context.lineWidth = 1.5 / scale
-  if (hint.line) {
+  const lines = hint.lines ?? (hint.line ? [hint.line] : [])
+  if (lines.length) {
     context.setLineDash([5 / scale, 4 / scale])
-    line(context, { x: hint.line.x1, y: hint.line.y1 }, { x: hint.line.x2, y: hint.line.y2 })
+    for (const segment of lines) line(context, { x: segment.x1, y: segment.y1 }, { x: segment.x2, y: segment.y2 })
     context.setLineDash([])
   }
   if (hint.point) {

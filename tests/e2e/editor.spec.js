@@ -410,6 +410,10 @@ test('吸附有距离边界且按住 Alt 可以临时禁用', async ({ page }) =
 
 test('槽的水平底座吸附地面并保留水平拖动，地面关闭时不吸附', async ({ page }) => {
   await preset(page, 'arc')
+  // 单独验证贴地，避免邻近滑块触发元件间横向吸附。
+  await page.locator('.scene-item').filter({ hasText: '滑块 A' }).click()
+  await page.getByRole('button', { name: '删除选中元件', exact: true }).click()
+  await page.locator('.scene-item').filter({ hasText: '弧形槽 A' }).click()
   await editNumber(page, '位置 Y', 2)
   await dragStart(page, { x: 365, y: 200 })
   await dragMove(page, { x: 425, y: 292 })
